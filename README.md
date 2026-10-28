@@ -18,4 +18,4 @@ Private Ernährungs-App für das Handy: Tagebuch mit Tageszielen, Barcode-Scanne
 
 ## Änderungen
 
-Bei jeder Änderung die Cache-Version in `sw.js` hochzählen, sonst sehen installierte Apps die neue Fassung erst verspätet.
+Aufbau, gespeicherte Daten und der Update-Ablauf stehen in [ENTWICKLUNG.md](ENTWICKLUNG.md). Kurz: `VERSION` in `app.js` und `CACHE` in `sw.js` hochzählen, sonst sehen installierte Apps die neue Fassung nicht.
