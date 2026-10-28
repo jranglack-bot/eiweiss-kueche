@@ -11,7 +11,7 @@ Im Ordner `garmin-worker` im Terminal:
 
     npx wrangler secret put ZUGANG
 
-Einen selbst ausgedachten Code mit mindestens 16 Zeichen eingeben, zum Beispiel vier zufällige Wörter mit Zahlen dazwischen. Den brauchst du gleich noch einmal in der App.
+Einen selbst ausgedachten Code mit mindestens 12 Zeichen eingeben, zum Beispiel vier zufällige Wörter mit Zahlen dazwischen. Den brauchst du gleich noch einmal in der App.
 
 ## 2. Garmin-Schlüssel anlegen und eintragen
 
@@ -38,7 +38,7 @@ Profil, **Garmin-Uhr verbinden**. Die Adresse steht schon drin, nur den Zugangsc
 
 ## Wenn etwas nicht klappt
 
-- **„Worker noch nicht fertig eingerichtet“:** `ZUGANG` fehlt oder hat weniger als 16 Zeichen.
+- **„Worker noch nicht fertig eingerichtet“:** `ZUGANG` fehlt oder hat weniger als 12 Zeichen.
 - **„Zugangscode stimmt nicht“:** In App und Worker muss genau derselbe Code stehen.
 - **„Garmin lehnt den Schlüssel ab“:** Schlüssel abgelaufen oder nicht vollständig kopiert. Neuen anlegen und `GARMIN_SCHLUESSEL` neu setzen.
 - Zum Nachsehen der Originaldaten: vorübergehend die Variable `DEBUG` mit Wert `1` anlegen, dann `?datum=JJJJ-MM-TT&roh=1` mit dem Zugangscode im Kopf `X-Zugang` abrufen, danach `DEBUG` wieder löschen.

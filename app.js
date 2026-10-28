@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -187,7 +187,7 @@ let eigeneRezepte = gespeichert.rezepte;
 function garminSauber(g) {
   if (!g || typeof g !== "object") return null;
   const url = str(g.url, 200).trim().replace(/\/+$/, "");
-  if (!/^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.workers\.dev$/i.test(url) || str(g.code, 100).length < 16) return null;
+  if (!/^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.workers\.dev$/i.test(url) || str(g.code, 100).length < 12) return null;
   return { url, code: str(g.code, 100), anteil: [50, 75, 100].includes(Number(g.anteil)) ? Number(g.anteil) : 75 };
 }
 function garminDatenSauber(d) {
@@ -1409,7 +1409,7 @@ document.addEventListener("submit", ev => {
     ev.preventDefault();
     const cfg = garminSauber({ url: $("#g-url").value, code: $("#g-code").value, anteil: 75 });
     const st = $("#garmin-status");
-    if (!cfg) { st.innerHTML = `<p class="leise">Die Adresse muss mit https:// beginnen und auf .workers.dev enden, der Zugangscode braucht mindestens 16 Zeichen.</p>`; return; }
+    if (!cfg) { st.innerHTML = `<p class="leise">Die Adresse muss mit https:// beginnen und auf .workers.dev enden, der Zugangscode braucht mindestens 12 Zeichen.</p>`; return; }
     st.innerHTML = `<p class="leise lade">Teste die Verbindung …</p>`;
     garminAbfragen(cfg, heute()).then(d => {
       garmin = cfg; sichern("garmin", garmin); garminTage = { [heute()]: { t: Date.now(), final: false, d } }; sichern("garminTage", garminTage);

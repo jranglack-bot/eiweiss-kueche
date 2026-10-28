@@ -18,7 +18,7 @@ export default {
     const antwort = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" } });
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     if (req.method !== "GET") return antwort({ fehler: "Nur Abfragen erlaubt" }, 405);
-    if (!env.ZUGANG || env.ZUGANG.length < 16) return antwort({ fehler: "Worker noch nicht fertig eingerichtet" }, 500);
+    if (!env.ZUGANG || env.ZUGANG.length < 12) return antwort({ fehler: "Worker noch nicht fertig eingerichtet" }, 500);
     if (!(await gleich(req.headers.get("X-Zugang") || "", env.ZUGANG))) return antwort({ fehler: "Zugangscode stimmt nicht" }, 401);
     if (!env.GARMIN_SCHLUESSEL) return antwort({ fehler: "Im Worker fehlt GARMIN_SCHLUESSEL" }, 500);
 
