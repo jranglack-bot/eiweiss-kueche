@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.0.1";
+const VERSION = "1.1.0";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -151,16 +151,21 @@ function datenSauber(d) {
   if (d.produkte && typeof d.produkte === "object") for (const [id, p] of Object.entries(d.produkte)) if (ID_OK.test(id) && p && typeof p === "object") produkte[id] = produktSauber(p, id);
   const rezepte = Array.isArray(d.rezepte) ? d.rezepte.slice(0, 200).filter(r => r && typeof r === "object").map(rezeptSauber) : [];
   const ids = new Set([...REZEPTE.map(r => r.id), ...rezepte.map(r => r.id)]);
-  const e = d.einkauf && typeof d.einkauf === "object" ? d.einkauf : {};
-  const einkauf = { sel: Array.isArray(e.sel) ? e.sel.filter(x => ids.has(x)) : REZEPTE.map(r => r.id), por: Math.min(6, Math.max(1, parseInt(e.por, 10) || 1)), chk: {} };
-  if (e.chk && typeof e.chk === "object") for (const k of Object.keys(e.chk).slice(0, 500)) if (k.length <= 120) einkauf.chk[k] = 1;
+  const l = d.liste && typeof d.liste === "object" ? d.liste : {};
+  const schluessel = o => { const r = {}; if (o && typeof o === "object") for (const k of Object.keys(o).slice(0, 500)) if (k.length <= 120 && o[k]) r[k] = 1; return r; };
+  const liste = {
+    rezepte: (Array.isArray(l.rezepte) ? l.rezepte : []).filter(x => x && ids.has(x.id)).slice(0, 50).map(x => ({ id: x.id, por: Math.max(1, Math.min(20, parseInt(x.por, 10) || 1)) })),
+    eigene: (Array.isArray(l.eigene) ? l.eigene : []).filter(x => x && typeof x === "object").slice(0, 300).map(x => ({ id: ID_OK.test(x.id || "") ? x.id : "l" + Math.random().toString(36).slice(2, 9), name: str(x.name, 120) || "Eintrag", menge: str(x.menge, 40), gang: GAENGE.some(g => g[0] === x.gang) ? x.gang : "sonst" })),
+    weg: schluessel(l.weg), chk: schluessel(l.chk), anders: {}
+  };
+  if (l.anders && typeof l.anders === "object") for (const k of Object.keys(l.anders).slice(0, 300)) if (k.length <= 120 && typeof l.anders[k] === "string") liste.anders[k] = str(l.anders[k], 40);
   const zuletzt = Array.isArray(d.zuletzt) ? d.zuletzt.slice(0, 20).filter(x => x && typeof x === "object").map(lmSauber) : [];
   const p = d.profil && typeof d.profil === "object" ? d.profil : {};
   const profil = { geschlecht: p.geschlecht === "w" ? "w" : "m", alter: str(p.alter, 4), groesse: str(p.groesse, 5), gewicht: str(p.gewicht, 6),
     aktiv: ["1.2", "1.375", "1.55", "1.725"].includes(p.aktiv) ? p.aktiv : "1.375", ziel: ["ab", "halten", "auf"].includes(p.ziel) ? p.ziel : "ab" };
-  return { ziele, profil, tagebuch, produkte, rezepte, einkauf, zuletzt };
+  return { ziele, profil, tagebuch, produkte, rezepte, liste, zuletzt };
 }
-const SPEICHER_TEILE = ["ziele", "profil", "tagebuch", "produkte", "rezepte", "einkauf", "zuletzt"];
+const SPEICHER_TEILE = ["ziele", "profil", "tagebuch", "produkte", "rezepte", "liste", "zuletzt"];
 function allesSichern(neu) {
   const alt = {}; for (const k of SPEICHER_TEILE) alt[k] = localStorage.getItem(LS + k);
   try { for (const k of SPEICHER_TEILE) localStorage.setItem(LS + k, JSON.stringify(neu[k])); return true; }
@@ -170,7 +175,8 @@ function allesSichern(neu) {
   }
 }
 const gespeichert = datenSauber(Object.fromEntries(SPEICHER_TEILE.map(k => [k, laden(k, null)])));
-let { ziele, profil, tagebuch, produkte, zuletzt, einkauf } = gespeichert;
+let { ziele, profil, tagebuch, produkte, zuletzt, liste } = gespeichert;
+try { localStorage.removeItem(LS + "einkauf"); } catch (e) {} // alte, feste Einkaufsliste aus Version 1.0
 let eigeneRezepte = gespeichert.rezepte;
 
 // ---------- Toast und Sheets ----------
@@ -344,6 +350,7 @@ function rezeptOeffnen(id) {
       ${r.quelle ? `<p class="quelle">Quelle: ${esc(r.quelle)} ${/^https:\/\//.test(r.link || "") ? `<a href="${esc(r.link)}" target="_blank" rel="noopener noreferrer">Original ansehen</a>` : ""}</p>` : ""}
       <div class="sh-fuss">
         ${pp.fehlt && !r.eigen ? "" : `<button class="knopf voll" data-sh="ins">Portion ins Tagebuch</button>`}
+        <button class="knopf" data-sh="liste">Auf die Einkaufsliste (${por} P.)</button>
         <button class="knopf" data-sh="wach" aria-pressed="false">Bildschirm anlassen</button>
         ${r.eigen ? `<button class="knopf" data-sh="bearb">Bearbeiten</button><button class="knopf warn" data-sh="loesch">Löschen</button>` : ""}
       </div>`;
@@ -357,11 +364,12 @@ function rezeptOeffnen(id) {
       else if (a === "por+") { if (por < 12) { por++; zeichnen(); } }
       else if (a === "ins") { const lm = lmAusRezept(r); sheetSchliessen(() => mengeSheet(lm, { meal: mahlzeitJetzt() })); }
       else if (a === "wach") wachUmschalten(b);
+      else if (a === "liste") { rezeptAufListe(r.id, por); toast(`Auf der Einkaufsliste: ${por} ${por === 1 ? "Portion" : "Portionen"}`); }
       else if (a === "bearb") sheetSchliessen(() => rezeptEditor(r));
       else if (a === "loesch") {
         if (!loeschBereit) { loeschBereit = true; b.textContent = "Wirklich löschen?"; return; }
         eigeneRezepte = eigeneRezepte.filter(x => x.id !== r.id); sichern("rezepte", eigeneRezepte);
-        einkauf.sel = einkauf.sel.filter(x => x !== r.id); sichern("einkauf", einkauf);
+        liste.rezepte = liste.rezepte.filter(x => x.id !== r.id); sichern("liste", liste);
         sheetSchliessen(() => toast("Rezept gelöscht"));
       }
     });
@@ -448,6 +456,7 @@ function mengeInhalt(s, lm, opts) {
       </div>
       <details class="mehr"><summary>Alle Nährwerte für diese Menge</summary>${naehrTabelleKurz(r.n)}</details>
       ${lm.ref.typ === "p" ? `<button class="text-knopf" data-m="produkt">Produktdaten ansehen oder ändern</button>` : ""}
+      ${zutatModus || lm.proPortion ? "" : `<button class="text-knopf" data-m="liste">Auf die Einkaufsliste setzen</button>`}
       <div class="sh-fuss">
         <button class="knopf voll" data-m="ok">${eintrag ? "Speichern" : zutatModus ? "Übernehmen" : "Eintragen"}</button>
         ${eintrag ? `<button class="knopf warn" data-m="loesch">Löschen</button>` : ""}
@@ -471,6 +480,7 @@ function mengeInhalt(s, lm, opts) {
     else if (a === "einheit") { const neu = b.dataset.v; if (neu !== einheit) { einheit = neu; menge = neu === "g" ? 100 : 1; zeichnen(); } }
     else if (a === "minus") { menge = Math.max(0, Math.round(((menge || 0) - schritt) * 100) / 100); zeichnen(); }
     else if (a === "plus") { menge = Math.round(((menge || 0) + schritt) * 100) / 100; zeichnen(); }
+    else if (a === "liste") produktAufListe(lm);
     else if (a === "produkt") { const p = produkte[lm.ref.id]; if (p) produktForm(s, { produkt: p, weiter: neu => mengeInhalt(s, lmAusProdukt(neu), opts) }); }
     else if (a === "loesch") {
       if (!loeschBereit) { loeschBereit = true; b.textContent = "Wirklich löschen?"; return; }
@@ -738,7 +748,7 @@ function rezeptEditor(alt) {
         if (!r.name) { toast("Bitte einen Namen eingeben"); return; }
         if (!r.zutaten.length) { toast("Bitte mindestens eine Zutat hinzufügen"); return; }
         const i = eigeneRezepte.findIndex(x => x.id === r.id); const sauber = Object.assign({}, r); delete sauber.nr;
-        if (i >= 0) eigeneRezepte[i] = sauber; else { eigeneRezepte.push(sauber); einkauf.sel.push(sauber.id); sichern("einkauf", einkauf); }
+        if (i >= 0) eigeneRezepte[i] = sauber; else eigeneRezepte.push(sauber);
         sichern("rezepte", eigeneRezepte); sheetSchliessen(() => toast("Rezept gespeichert"));
       }
     });
@@ -746,23 +756,37 @@ function rezeptEditor(alt) {
 }
 
 // ---------- Einkauf ----------
+// Die Liste startet leer. Rezepte kommen mit Portionen dazu, ihre Zutaten werden zusammengezählt.
+// Einzelne Rezeptzutaten lassen sich ausblenden (weg) oder mit eigener Menge versehen (anders).
+// Eigene Einträge stehen frei daneben.
+function rezeptSchluessel(r) { return r.eigen ? (r.zutaten || []).map(z => "o:" + norm(z.name)) : [...r.z, ...r.s].filter(i => i.c).map(i => i.c); }
+function rezeptAufListe(id, por) {
+  const r = rezeptNach(id); if (!r) return;
+  const x = liste.rezepte.find(e => e.id === id);
+  if (x) x.por = Math.min(20, x.por + por); else liste.rezepte.push({ id, por: Math.min(20, por) });
+  for (const k of rezeptSchluessel(r)) { delete liste.weg[k]; delete liste.chk[k]; }
+  sichern("liste", liste);
+}
 function sammeln() {
   const map = {};
-  for (const r of alleRezepte()) {
-    if (!einkauf.sel.includes(r.id)) continue;
+  for (const lr of liste.rezepte) {
+    const r = rezeptNach(lr.id); if (!r) continue;
     if (r.eigen) {
-      const f = einkauf.por / (r.portionen || 1);
-      for (const z of r.zutaten || []) { const k = "o:" + norm(z.name); const m = map[k] || (map[k] = { name: z.name, gang: "sonst", u: "g", sum: 0, refs: new Set() }); m.sum += z.gramm * f; m.refs.add(r.nr); }
+      const f = lr.por / (r.portionen || 1);
+      for (const z of r.zutaten || []) { const k = "o:" + norm(z.name); const m = map[k] || (map[k] = { key: k, name: z.name, gang: "sonst", u: "g", sum: 0, refs: new Set() }); m.sum += z.gramm * f; m.refs.add(r.nr); }
       continue;
     }
     for (const it of [...r.z, ...r.s]) {
       if (!it.c) continue; const b = BASIS[it.c];
-      const m = map[it.c] || (map[it.c] = { c: it.c, name: b.n, gang: b.gang, u: b.u, sum: 0, refs: new Set() });
-      if (typeof it.a === "number" && (!it.u || it.u === b.u)) m.sum += it.a * einkauf.por;
+      const m = map[it.c] || (map[it.c] = { key: it.c, c: it.c, name: b.n, gang: b.gang, u: b.u, sum: 0, refs: new Set() });
+      if (typeof it.a === "number" && (!it.u || it.u === b.u)) m.sum += it.a * lr.por;
       m.refs.add(r.nr);
     }
   }
-  return map;
+  const zeilen = Object.values(map).filter(m => !liste.weg[m.key]).map(m => Object.assign(m, { aus: "rezept",
+    t: liste.anders[m.key] != null ? { main: liste.anders[m.key] } : (m.gang === "vorrat" ? null : kaufText(m)) }));
+  for (const e of liste.eigene) zeilen.push({ key: "e:" + e.id, id: e.id, name: e.name, gang: e.gang, aus: "eigen", refs: new Set(), t: e.menge ? { main: e.menge } : null });
+  return zeilen;
 }
 function kaufText(m) {
   const b = m.c ? BASIS[m.c] : null; const s = m.sum;
@@ -772,32 +796,128 @@ function kaufText(m) {
   return { main: fmtNum(s) + " " + m.u };
 }
 function viewEinkauf() {
-  const alle = alleRezepte(); const map = sammeln();
+  const zeilen = sammeln();
+  const rez = liste.rezepte.map(lr => ({ lr, r: rezeptNach(lr.id) })).filter(x => x.r);
   let gesamt = 0, erledigt = 0, html = "";
   for (const [g, titel] of GAENGE) {
-    const keys = Object.keys(map).filter(k => map[k].gang === g); if (!keys.length) continue;
-    const vorrat = g === "vorrat";
-    html += `<div class="gang${vorrat ? " vorrat" : ""}"><h3>${titel}<small>${keys.length}</small></h3><ul class="posten">${keys.map(k => {
-      const m = map[k]; const on = !!einkauf.chk[k]; gesamt++; if (on) erledigt++;
-      const t = vorrat ? null : kaufText(m);
-      const refs = [...m.refs].sort((a, b) => a - b).map(n => `<button type="button" data-act="zu-rezept" data-nr="${n}">${n}</button>`).join(" · ");
-      return `<li><label><input type="checkbox" data-chk="${esc(k)}" ${on ? "checked" : ""}><span class="name">${esc(m.name)}<span class="refs">für ${refs}</span></span><span class="menge">${t ? esc(t.main) + (t.sub ? `<small>${esc(t.sub)}</small>` : "") : ""}</span></label></li>`;
+    const l = zeilen.filter(z => z.gang === g); if (!l.length) continue;
+    html += `<div class="gang${g === "vorrat" ? " vorrat" : ""}"><h3>${titel}<small>${l.length}</small></h3><ul class="posten">${l.map(z => {
+      const on = !!liste.chk[z.key]; gesamt++; if (on) erledigt++;
+      const refs = [...z.refs].sort((a, b) => a - b).map(n => `<button type="button" data-act="zu-rezept" data-nr="${n}">${n}</button>`).join(" · ");
+      return `<li><label><input type="checkbox" data-chk="${esc(z.key)}" ${on ? "checked" : ""}><span class="name">${esc(z.name)}<span class="refs">${refs ? "für Rezept " + refs : "eigener Eintrag"}</span></span><span class="menge">${z.t ? esc(z.t.main) + (z.t.sub ? `<small>${esc(z.t.sub)}</small>` : "") : ""}</span></label><button class="rund klein" data-act="l-edit" data-k="${esc(z.key)}" aria-label="${esc(z.name)} ändern oder entfernen">✎</button></li>`;
     }).join("")}</ul></div>`;
   }
   return `<h2 class="seitentitel">Einkaufsliste</h2>
-  <div class="por-zeile"><span>Portionen je Rezept</span><div class="stepper"><button data-act="e-por" data-d="-1" aria-label="Weniger" ${einkauf.por <= 1 ? "disabled" : ""}>−</button><output class="zahl">${esc(einkauf.por)}</output><button data-act="e-por" data-d="1" aria-label="Mehr" ${einkauf.por >= 6 ? "disabled" : ""}>+</button></div></div>
-  <div class="picks">${alle.map(r => `<button class="pick" data-act="pick" data-id="${esc(r.id)}" aria-pressed="${einkauf.sel.includes(r.id)}"><span class="nr">${r.nr}</span><span class="pt">${esc(r.name)}</span></button>`).join("")}</div>
-  <div class="stand"><span class="zahl">${gesamt ? `${erledigt} von ${gesamt} abgehakt` : ""}</span><div class="knoepfe"><button class="knopf voll" data-act="kopieren">Liste kopieren</button><button class="knopf" data-act="haken-weg">Haken zurücksetzen</button></div></div>
-  ${html || `<p class="leise">Noch kein Rezept ausgewählt.</p>`}`;
+  <div class="knoepfe"><button class="knopf voll" data-act="l-bib">Rezept hinzufügen</button><button class="knopf" data-act="l-eigen">Eigener Eintrag</button></div>
+  ${rez.length ? `<section class="karte"><h3>Rezepte auf der Liste</h3><ul class="l-rez">${rez.map(({ lr, r }) => `<li>
+      <span class="en"><b>${esc(r.name)}</b><small>Rezept ${r.nr} · ${lr.por === 1 ? "1 Portion" : lr.por + " Portionen"}</small></span>
+      <div class="stepper"><button data-act="l-por" data-id="${esc(r.id)}" data-d="-1" aria-label="Eine Portion weniger" ${lr.por <= 1 ? "disabled" : ""}>−</button><output class="zahl">${lr.por}</output><button data-act="l-por" data-id="${esc(r.id)}" data-d="1" aria-label="Eine Portion mehr">+</button></div>
+      <button class="rund klein" data-act="l-rez-weg" data-id="${esc(r.id)}" aria-label="${esc(r.name)} von der Liste nehmen">×</button></li>`).join("")}</ul></section>` : ""}
+  ${gesamt ? `<div class="stand"><span class="zahl">${erledigt} von ${gesamt} erledigt</span><div class="knoepfe"><button class="knopf" data-act="kopieren">Kopieren</button>${erledigt ? `<button class="knopf" data-act="l-erledigt">Erledigte entfernen</button>` : ""}<button class="knopf warn" data-act="l-leeren">Liste leeren</button></div></div>` : ""}
+  ${html || `<section class="karte"><h3>Deine Liste ist leer</h3><p class="leise">Füg Rezepte aus deiner Sammlung hinzu, dann stehen ihre Zutaten hier zusammengerechnet. Oder trag selbst ein, was du brauchst, zum Beispiel Gemüse oder Obst.</p></section>`}`;
 }
 function listeAlsText() {
-  const map = sammeln(); const out = [];
+  const zeilen = sammeln(); const out = [];
   for (const [g, titel] of GAENGE) {
-    if (g === "vorrat") continue;
-    const keys = Object.keys(map).filter(k => map[k].gang === g && !einkauf.chk[k]); if (!keys.length) continue;
-    out.push(titel + ":"); for (const k of keys) out.push("• " + map[k].name + ": " + kaufText(map[k]).main); out.push("");
+    const l = zeilen.filter(z => z.gang === g && !liste.chk[z.key]); if (!l.length) continue;
+    out.push(titel + ":"); for (const z of l) out.push("• " + z.name + (z.t ? ": " + z.t.main : "")); out.push("");
   }
-  return out.join("\n").trim() || "Alles abgehakt.";
+  return out.join("\n").trim() || "Alles erledigt.";
+}
+
+// Rezept-Bibliothek: alle Rezepte durchsuchen und mit Portionen auf die Liste setzen
+function rezeptBibliothek() {
+  let filter = ui.filter === "mild" ? "mild" : "alle", q = "", gewaehlt = null, por = 2;
+  sheetOeffnen(s => {
+    const liste_ = () => alleRezepte().filter(r => (filter === "alle" || (r.scharf || "mild") === "mild") && (!q || norm(r.name + " " + (r.mit || "")).includes(norm(q))));
+    const zeichnen = () => {
+      if (gewaehlt) {
+        const r = rezeptNach(gewaehlt); const pp = rezeptProPortion(r);
+        s.innerHTML = `<div class="sh-kopf"><button class="rund" data-b="zurueck" aria-label="Zurück">‹</button><span class="leise">Rezept ${r.nr}</span></div>
+          <h2>${esc(r.name)}</h2>${r.mit ? `<p class="mit">mit ${esc(r.mit)}</p>` : ""}
+          ${pp.fehlt && !r.eigen ? "" : `<p class="leise">${f0(pp.n.kcal)} kcal und ${f0(pp.n.eiw)} g Eiweiß pro Portion</p>`}
+          <div class="por-zeile"><span>Wie viele Portionen?</span><div class="stepper gross"><button data-b="por-" aria-label="Weniger" ${por <= 1 ? "disabled" : ""}>−</button><output class="zahl">${por}</output><button data-b="por+" aria-label="Mehr">+</button></div></div>
+          <div class="sh-fuss"><button class="knopf voll" data-b="dazu">Auf die Einkaufsliste</button></div>`;
+        return;
+      }
+      const l = liste_();
+      s.innerHTML = `<div class="sh-kopf"><button class="rund" data-b="zu" aria-label="Schließen">×</button><span class="leise">Rezept auf die Liste setzen</span><button class="knopf" data-b="zu">Fertig</button></div>
+        <input id="bib-suche" type="search" placeholder="Rezept suchen" autocomplete="off" value="${esc(q)}" aria-label="Rezept suchen">
+        <div class="chips"><button class="chip" data-b="f" data-v="alle" aria-pressed="${filter === "alle"}">Alle</button><button class="chip" data-b="f" data-v="mild" aria-pressed="${filter === "mild"}">Nur mild</button></div>
+        <ul class="treffer">${l.map(r => { const auf = liste.rezepte.find(x => x.id === r.id); const pp = rezeptProPortion(r);
+          return `<li><button data-b="wahl" data-id="${esc(r.id)}"><span class="en"><b>${esc(r.name)}</b><small>${r.mit ? "mit " + esc(r.mit) : "eigenes Rezept"}${SCHARF[r.scharf] && r.scharf !== "mild" ? " · " + SCHARF[r.scharf] : ""}${auf ? ` · schon auf der Liste (${auf.por} P.)` : ""}</small></span><span class="zahl leise">${pp.fehlt && !r.eigen ? "" : f0(pp.n.kcal) + " kcal"}</span></button></li>`; }).join("") || `<li class="leise">Kein Rezept gefunden.</li>`}</ul>`;
+      const i = $("#bib-suche", s); i.addEventListener("input", () => { q = i.value; const pos = i.selectionStart; zeichnen(); const n = $("#bib-suche", s); n.focus(); n.setSelectionRange(pos, pos); });
+    };
+    zeichnen();
+    s.onclick = ev => {
+      const b = ev.target.closest("[data-b]"); if (!b) return; const a = b.dataset.b;
+      if (a === "zu") sheetSchliessen();
+      else if (a === "f") { filter = b.dataset.v; zeichnen(); }
+      else if (a === "wahl") { gewaehlt = b.dataset.id; por = 2; zeichnen(); }
+      else if (a === "zurueck") { gewaehlt = null; zeichnen(); }
+      else if (a === "por-") { if (por > 1) { por--; zeichnen(); } }
+      else if (a === "por+") { if (por < 20) { por++; zeichnen(); } }
+      else if (a === "dazu") { const r = rezeptNach(gewaehlt); rezeptAufListe(gewaehlt, por); toast(`${r.name}: ${por} ${por === 1 ? "Portion" : "Portionen"} auf der Liste`); gewaehlt = null; zeichnen(); }
+    };
+  }, { voll: true });
+}
+
+// Eigenen Eintrag anlegen oder einen Listeneintrag ändern
+function listenEintragSheet(key) {
+  const zeile = key ? sammeln().find(z => z.key === key) : null;
+  const eigen = !zeile || zeile.aus === "eigen";
+  const e = zeile && eigen ? liste.eigene.find(x => "e:" + x.id === key) : null;
+  sheetOeffnen(s => {
+    const zeichnen = () => {
+      const gaenge = GAENGE.map(([g, t]) => `<option value="${g}" ${(e ? e.gang : "gemuese") === g ? "selected" : ""}>${esc(t)}</option>`).join("");
+      s.innerHTML = `<div class="sh-kopf"><button class="rund" data-l="zu" aria-label="Schließen">×</button><span class="leise">${zeile ? "Eintrag ändern" : "Eigener Eintrag"}</span></div>
+        ${zeile && !eigen ? `<h2>${esc(zeile.name)}</h2><p class="leise">Kommt aus Rezept ${[...zeile.refs].sort((a, b) => a - b).join(", ")}.${zeile.sum > 0 ? " Gerechnet: " + esc(kaufText(zeile).main) + "." : ""}</p>` : ""}
+        <form id="l-form" class="formular" novalidate>
+          ${eigen ? `<label>Was?<input id="l-name" value="${esc(e ? e.name : "")}" placeholder="zum Beispiel Zucchini" autocomplete="off"></label>` : ""}
+          <label>Menge (optional)<input id="l-menge" value="${esc(eigen ? (e ? e.menge : "") : (liste.anders[key] != null ? liste.anders[key] : (zeile.t ? zeile.t.main : "")))}" placeholder="zum Beispiel 2 Stück oder 500 g" autocomplete="off"></label>
+          ${eigen ? `<label>Wo im Laden?<select id="l-gang">${gaenge}</select></label>` : ""}
+          <div class="sh-fuss">
+            <button class="knopf voll" type="submit">${zeile ? "Speichern" : "Hinzufügen"}</button>
+            ${!zeile ? `<button class="knopf" type="button" data-l="zu">Fertig</button>` : ""}
+            ${zeile && !eigen && liste.anders[key] != null ? `<button class="knopf" type="button" data-l="rechnen">Gerechnete Menge</button>` : ""}
+            ${zeile ? `<button class="knopf warn" type="button" data-l="weg">Von der Liste nehmen</button>` : ""}
+          </div>
+        </form>`;
+      if (eigen && !zeile) setTimeout(() => $("#l-name", s) && $("#l-name", s).focus(), 50);
+      $("#l-form", s).addEventListener("submit", ev => {
+        ev.preventDefault();
+        const menge = str($("#l-menge", s).value.trim(), 40);
+        if (eigen) {
+          const name = str($("#l-name", s).value.trim(), 120); if (!name) { toast("Bitte eintragen, was du brauchst"); return; }
+          const gang = $("#l-gang", s).value;
+          if (e) Object.assign(e, { name, menge, gang });
+          else liste.eigene.push({ id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, menge, gang });
+          sichern("liste", liste);
+          if (zeile) sheetSchliessen(() => toast("Gespeichert"));
+          else { toast(`${name} steht auf der Liste`); $("#l-name", s).value = ""; $("#l-menge", s).value = ""; $("#l-name", s).focus(); }
+        } else {
+          if (menge) liste.anders[key] = menge; else delete liste.anders[key];
+          sichern("liste", liste); sheetSchliessen(() => toast("Gespeichert"));
+        }
+      });
+    };
+    zeichnen();
+    s.onclick = ev => {
+      const b = ev.target.closest("[data-l]"); if (!b) return;
+      if (b.dataset.l === "zu") sheetSchliessen();
+      else if (b.dataset.l === "rechnen") { delete liste.anders[key]; sichern("liste", liste); sheetSchliessen(() => toast("Gerechnete Menge gilt wieder")); }
+      else if (b.dataset.l === "weg") {
+        if (eigen) liste.eigene = liste.eigene.filter(x => "e:" + x.id !== key); else liste.weg[key] = 1;
+        delete liste.chk[key]; delete liste.anders[key]; sichern("liste", liste); sheetSchliessen(() => toast("Von der Liste genommen"));
+      }
+    };
+  });
+}
+function produktAufListe(lm) {
+  const name = lm.sub && lm.sub !== "BLS" && lm.sub !== "eigenes Produkt" ? `${lm.name} (${lm.sub})` : lm.name;
+  if (liste.eigene.some(x => x.name === name)) { toast("Steht schon auf der Liste"); return; }
+  liste.eigene.push({ id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: str(name, 120), menge: "", gang: "sonst" });
+  sichern("liste", liste); toast("Auf der Einkaufsliste");
 }
 
 // ---------- Profil ----------
@@ -853,7 +973,7 @@ function viewProfil() {
   </details>`;
 }
 function exportieren() {
-  const daten = { app: "eiweiss-kueche", version: VERSION, gesichert: new Date().toISOString(), ziele, profil, tagebuch, produkte, rezepte: eigeneRezepte, einkauf, zuletzt };
+  const daten = { app: "eiweiss-kueche", version: VERSION, gesichert: new Date().toISOString(), ziele, profil, tagebuch, produkte, rezepte: eigeneRezepte, liste, zuletzt };
   const url = URL.createObjectURL(new Blob([JSON.stringify(daten)], { type: "application/json" }));
   const l = document.createElement("a"); l.href = url; l.download = `eiweiss-kueche-${heute()}.json`; document.body.appendChild(l); l.click(); l.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000); toast("Sicherung erstellt");
@@ -890,17 +1010,24 @@ document.addEventListener("click", ev => {
   else if (a === "filter") { ui.filter = b.dataset.f; sichern("filter", ui.filter); render(); }
   else if (a === "rezept") rezeptOeffnen(b.dataset.id);
   else if (a === "rezept-neu") rezeptEditor(null);
-  else if (a === "pick") { const id = b.dataset.id; einkauf.sel = einkauf.sel.includes(id) ? einkauf.sel.filter(x => x !== id) : [...einkauf.sel, id]; sichern("einkauf", einkauf); render(); }
-  else if (a === "e-por") { einkauf.por = Math.min(6, Math.max(1, einkauf.por + +b.dataset.d)); sichern("einkauf", einkauf); render(); }
+  else if (a === "l-bib") rezeptBibliothek();
+  else if (a === "l-eigen") listenEintragSheet(null);
+  else if (a === "l-edit") listenEintragSheet(b.dataset.k);
+  else if (a === "l-por") { const x = liste.rezepte.find(e => e.id === b.dataset.id); if (x) { x.por = Math.min(20, Math.max(1, x.por + +b.dataset.d)); sichern("liste", liste); render(); } }
+  else if (a === "l-rez-weg") { liste.rezepte = liste.rezepte.filter(e => e.id !== b.dataset.id); sichern("liste", liste); render(); toast("Rezept von der Liste genommen"); }
+  else if (a === "l-erledigt") {
+    for (const z of sammeln()) if (liste.chk[z.key]) { if (z.aus === "eigen") liste.eigene = liste.eigene.filter(x => x.id !== z.id); else liste.weg[z.key] = 1; delete liste.chk[z.key]; delete liste.anders[z.key]; }
+    sichern("liste", liste); render(); toast("Erledigte entfernt");
+  }
+  else if (a === "l-leeren") {
+    if (b.dataset.bereit !== "1") { b.dataset.bereit = "1"; b.textContent = "Wirklich alles löschen?"; setTimeout(() => { if (b.isConnected) { b.dataset.bereit = ""; b.textContent = "Liste leeren"; } }, 3000); return; }
+    liste = { rezepte: [], eigene: [], weg: {}, chk: {}, anders: {} }; sichern("liste", liste); render(); toast("Liste geleert");
+  }
   else if (a === "zu-rezept") { ev.preventDefault(); const r = alleRezepte().find(x => x.nr === +b.dataset.nr); if (r) rezeptOeffnen(r.id); }
   else if (a === "kopieren") {
     const text = listeAlsText();
     const zeigen = () => sheetOeffnen(s => { s.innerHTML = `<div class="sh-kopf"><button class="rund" data-k="zu" aria-label="Schließen">×</button><span class="leise">Markieren und kopieren</span></div><textarea class="kopie" readonly>${esc(text)}</textarea>`; s.onclick = e => { if (e.target.closest("[data-k]")) sheetSchliessen(); }; const t = $("textarea", s); t.focus(); t.select(); });
     try { navigator.clipboard.writeText(text).then(() => toast("Liste kopiert"), zeigen); } catch (e) { zeigen(); }
-  }
-  else if (a === "haken-weg") {
-    if (b.dataset.bereit !== "1") { b.dataset.bereit = "1"; b.textContent = "Wirklich alle Haken weg?"; setTimeout(() => { if (b.isConnected) { b.dataset.bereit = ""; b.textContent = "Haken zurücksetzen"; } }, 3000); return; }
-    einkauf.chk = {}; sichern("einkauf", einkauf); render(); toast("Alle Haken entfernt");
   }
   else if (a === "produkt-edit") { const p = produkte[b.dataset.id]; if (p) sheetOeffnen(s => produktForm(s, { produkt: p })); }
   else if (a === "export") exportieren();
@@ -908,7 +1035,7 @@ document.addEventListener("click", ev => {
 });
 document.addEventListener("change", ev => {
   const c = ev.target.dataset && ev.target.dataset.chk;
-  if (c) { if (ev.target.checked) einkauf.chk[c] = 1; else delete einkauf.chk[c]; sichern("einkauf", einkauf); render(); return; }
+  if (c) { if (ev.target.checked) liste.chk[c] = 1; else delete liste.chk[c]; sichern("liste", liste); render(); return; }
   if (ev.target.id === "import" && ev.target.files[0]) {
     const datei = ev.target.files[0]; const leser = new FileReader();
     leser.onload = () => {
@@ -929,7 +1056,7 @@ document.addEventListener("change", ev => {
             if (b.dataset.i === "zu") { sheetSchliessen(); return; }
             if (b.dataset.i === "vorher") { exportieren(); return; }
             if (!allesSichern(neu)) { toast("Einspielen hat nicht geklappt, deine bisherigen Daten sind noch da"); return; }
-            ({ ziele, profil, tagebuch, produkte, zuletzt, einkauf } = neu); eigeneRezepte = neu.rezepte;
+            ({ ziele, profil, tagebuch, produkte, zuletzt, liste } = neu); eigeneRezepte = neu.rezepte;
             sheetSchliessen(() => toast("Sicherung eingespielt"));
           };
         });

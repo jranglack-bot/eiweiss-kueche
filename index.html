@@ -148,20 +148,18 @@ table.naehr{width:100%;border-collapse:collapse;font-size:14px}
 .t{font-family:var(--f-mono);font-size:.86em;background:var(--accent-soft);padding:1px 6px;border-radius:5px;white-space:nowrap}
 
 /* Einkauf */
-.picks{display:grid;grid-template-columns:minmax(0,1fr);gap:6px}
-.pick{display:flex;align-items:center;gap:10px;text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:8px 12px;cursor:pointer;min-height:48px}
-.pick .nr{flex:none;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-family:var(--f-mono);font-size:13px;border:1.5px solid var(--line);color:var(--muted)}
-.pick .pt{min-width:0;font-size:14px;line-height:1.25}
-.pick[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
-.pick[aria-pressed="true"] .nr{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.l-rez{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.l-rez li{display:flex;align-items:center;gap:10px}
+.l-rez .en{flex:1}
+.l-rez .stepper button{width:36px;height:36px}
 .stand{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;font-size:14px}
 .gang{display:grid;gap:4px}
 .gang h3{display:flex;justify-content:space-between;align-items:baseline;padding-bottom:6px;border-bottom:2px solid var(--ink)}
 .gang h3 small{font-family:var(--f-mono);font-size:12px;font-weight:500;color:var(--muted)}
 .gang.vorrat h3{border-bottom-color:var(--line)}
 .posten{list-style:none;margin:0;padding:0}
-.posten li{border-bottom:1px solid var(--line)}
-.posten label{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:12px;padding-block:10px;min-height:52px;cursor:pointer}
+.posten li{border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.posten label{flex:1;min-width:0;display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:12px;padding-block:10px;min-height:52px;cursor:pointer}
 .posten input{width:22px;height:22px;margin:0;accent-color:var(--accent)}
 .posten .name{min-width:0}
 .posten .refs{display:block;font-size:12px;color:var(--muted)}
@@ -219,7 +217,7 @@ details.mehr summary{cursor:pointer;color:var(--accent);font-size:14px}
 #toast{position:fixed;left:50%;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px) + 80px);transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px;z-index:50;max-width:calc(100% - 32px);text-align:center}
 #update{position:fixed;left:16px;right:16px;top:calc(env(safe-area-inset-top,0px) + 10px);z-index:40;background:var(--ink);color:var(--bg);border-radius:14px;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;max-width:608px;margin:0 auto}
 #update button{border:0;border-radius:999px;background:var(--accent);color:var(--accent-ink);padding:8px 14px;font-weight:700;cursor:pointer}
-@media (min-width:560px){.picks{grid-template-columns:repeat(2,minmax(0,1fr))}.zutaten{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+@media (min-width:560px){.zutaten{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 @media (prefers-reduced-motion: reduce){*{transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
