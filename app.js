@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.5.0";
+const VERSION = "1.6.0";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -45,8 +45,8 @@ window.addEventListener("error", e => fehlerMerken(`${e.message} @${(e.filename 
 window.addEventListener("unhandledrejection", e => fehlerMerken("Promise: " + (e.reason && e.reason.message || e.reason)));
 
 const STANDARD_ZIELE = { kcal: 2000, eiw: 150, kh: 200, fett: 65 };
-const ui = { tab: laden("tab", "tagebuch"), datum: heute(), filter: laden("filter", "alle"), details: false };
-if (!["tagebuch", "rezepte", "einkauf", "profil"].includes(ui.tab)) ui.tab = "tagebuch";
+const ui = { tab: laden("tab", "tagebuch"), datum: heute(), filter: laden("filter", "alle"), details: false, woche: wochenStart(heute()) };
+if (!["tagebuch", "plan", "rezepte", "einkauf", "profil"].includes(ui.tab)) ui.tab = "tagebuch";
 if (!["alle", "mild", "scharf"].includes(ui.filter)) ui.filter = "alle";
 
 // ---------- Nährwerte ----------
@@ -165,9 +165,17 @@ function datenSauber(d) {
   const profil = { geschlecht: p.geschlecht === "w" ? "w" : "m", alter: str(p.alter, 4), groesse: str(p.groesse, 5), gewicht: str(p.gewicht, 6),
     alltag: ganz(p.alltag, 0, 3, 1), tage: ganz(p.tage, 0, 7, 3), dauer: ganz(p.dauer, 15, 150, 60), intens: ganz(p.intens, 0, 2, 1), tempo: ganz(p.tempo, 0, 2, 1),
     ziel: ["ab", "halten", "auf"].includes(p.ziel) ? p.ziel : "ab" };
-  return { ziele, profil, tagebuch, produkte, rezepte, liste, zuletzt };
+  // Essensplan: je Tag geplante Rezepte mit Mahlzeit, Uhrzeit und Portionen
+  const plan = {};
+  if (d.plan && typeof d.plan === "object") for (const [tag, l] of Object.entries(d.plan)) if (/^\d{4}-\d{2}-\d{2}$/.test(tag) && Array.isArray(l)) {
+    const sauber = l.slice(0, 20).filter(x => x && typeof x === "object" && ids.has(x.rezept)).map(x => ({ id: ID_OK.test(x.id || "") ? x.id : "p" + Math.random().toString(36).slice(2, 9), rezept: x.rezept,
+      meal: ["frueh", "mittag", "abend", "snack"].includes(x.meal) ? x.meal : "mittag", por: Math.max(1, Math.min(20, parseInt(x.por, 10) || 1)),
+      zeit: /^([01]\d|2[0-3]):[0-5]\d$/.test(x.zeit || "") ? x.zeit : "12:30", aufListe: !!x.aufListe }));
+    if (sauber.length) plan[tag] = sauber;
+  }
+  return { ziele, profil, tagebuch, produkte, rezepte, liste, zuletzt, plan };
 }
-const SPEICHER_TEILE = ["ziele", "profil", "tagebuch", "produkte", "rezepte", "liste", "zuletzt"];
+const SPEICHER_TEILE = ["ziele", "profil", "tagebuch", "produkte", "rezepte", "liste", "zuletzt", "plan"];
 function allesSichern(neu) {
   const alt = {}; for (const k of SPEICHER_TEILE) alt[k] = localStorage.getItem(LS + k);
   try { for (const k of SPEICHER_TEILE) localStorage.setItem(LS + k, JSON.stringify(neu[k])); return true; }
@@ -177,7 +185,7 @@ function allesSichern(neu) {
   }
 }
 const gespeichert = datenSauber(Object.fromEntries(SPEICHER_TEILE.map(k => [k, laden(k, null)])));
-let { ziele, profil, tagebuch, produkte, zuletzt, liste } = gespeichert;
+let { ziele, profil, tagebuch, produkte, zuletzt, liste, plan } = gespeichert;
 try { localStorage.removeItem(LS + "einkauf"); } catch (e) {} // alte, feste Einkaufsliste aus Version 1.0
 let eigeneRezepte = gespeichert.rezepte;
 
@@ -265,6 +273,7 @@ function render() {
   if (ui.tab === "tagebuch") main.innerHTML = viewTagebuch();
   else if (ui.tab === "rezepte") main.innerHTML = viewRezepte();
   else if (ui.tab === "einkauf") main.innerHTML = viewEinkauf();
+  else if (ui.tab === "plan") main.innerHTML = viewPlan();
   else main.innerHTML = viewProfil();
   $("#scan-fab").hidden = ui.tab !== "tagebuch";
   if (ui.tab === "tagebuch" && garmin) garminAktualisieren(ui.datum);
@@ -452,6 +461,7 @@ function rezeptOeffnen(id) {
       <div class="sh-fuss">
         ${pp.fehlt && !r.eigen ? "" : `<button class="knopf voll" data-sh="ins">Portion ins Tagebuch</button>`}
         <button class="knopf" data-sh="liste">Auf die Einkaufsliste (${por} P.)</button>
+        <button class="knopf" data-sh="plan">Einplanen</button>
         <button class="knopf" data-sh="wach" aria-pressed="false">Bildschirm anlassen</button>
         ${r.eigen ? `<button class="knopf" data-sh="bearb">Bearbeiten</button><button class="knopf warn" data-sh="loesch">Löschen</button>` : ""}
       </div>`;
@@ -466,11 +476,13 @@ function rezeptOeffnen(id) {
       else if (a === "ins") { const lm = lmAusRezept(r); sheetSchliessen(() => mengeSheet(lm, { meal: mahlzeitJetzt() })); }
       else if (a === "wach") wachUmschalten(b);
       else if (a === "liste") { rezeptAufListe(r.id, por); toast(`Auf der Einkaufsliste: ${por} ${por === 1 ? "Portion" : "Portionen"}`); }
+      else if (a === "plan") sheetSchliessen(() => planSheet(heute(), r.id));
       else if (a === "bearb") sheetSchliessen(() => rezeptEditor(r));
       else if (a === "loesch") {
         if (!loeschBereit) { loeschBereit = true; b.textContent = "Wirklich löschen?"; return; }
         eigeneRezepte = eigeneRezepte.filter(x => x.id !== r.id); sichern("rezepte", eigeneRezepte);
         liste.rezepte = liste.rezepte.filter(x => x.id !== r.id); sichern("liste", liste);
+        for (const t of Object.keys(plan)) { plan[t] = plan[t].filter(x => x.rezept !== r.id); if (!plan[t].length) delete plan[t]; } sichern("plan", plan);
         sheetSchliessen(() => toast("Rezept gelöscht"));
       }
     });
@@ -1044,6 +1056,161 @@ function rezeptEditor(alt) {
   }, { voll: true });
 }
 
+// ---------- Essensplan ----------
+// Rezepte auf Tage legen. Jeder Eintrag lässt sich per Link in den Google Kalender übernehmen (ohne Anmeldung),
+// die ganze Woche als .ics-Datei, und die Zutaten landen auf Wunsch auf der Einkaufsliste.
+const MEAL_ZEIT = { frueh: "07:30", mittag: "12:30", abend: "18:30", snack: "15:30" };
+const MEAL_DAUER = { frueh: 30, mittag: 45, abend: 45, snack: 15 };
+const mealName = id => (MAHLZEITEN.find(m => m[0] === id) || [0, "Mahlzeit"])[1];
+function wochenStart(iso) { const [y, m, d] = iso.split("-").map(Number); const wt = (new Date(y, m - 1, d).getDay() + 6) % 7; return datumPlus(iso, -wt); }
+function kalenderwoche(iso) {
+  const [y, m, d] = iso.split("-").map(Number); const t = new Date(Date.UTC(y, m - 1, d)); const wt = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - wt); const jahr = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t - jahr) / 86400000 + 1) / 7);
+}
+const kurzDatum = iso => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString("de-DE", { day: "numeric", month: "short" }); };
+function zutatText(it, por, r) {
+  if (r.eigen) return `${f0(it.gramm * por / (r.portionen || 1))} g ${it.name}`;
+  const b = it.c ? BASIS[it.c] : null; const name = it.t || (b.rn || b.n); const u = it.u || (b && b.u);
+  return `${it.x ? it.x : typeof it.a === "number" ? mengeFmt(it.a * por, u) : ""} ${name}`.trim();
+}
+function terminText(r, e) {
+  const pp = rezeptProPortion(r);
+  const zut = r.eigen ? (r.zutaten || []).map(z => zutatText(z, e.por, r)) : [...r.z, ...r.s].map(it => zutatText(it, e.por, r));
+  return [`${e.por} ${e.por === 1 ? "Portion" : "Portionen"}${pp.fehlt && !r.eigen ? "" : `, pro Portion ${f0(pp.n.kcal)} kcal und ${f0(pp.n.eiw)} g Eiweiß`}`, "", "Zutaten:", ...zut.map(z => "• " + z), "", "Rezept mit allen Schritten in der Eiweiß-Küche:", "https://jranglack-bot.github.io/eiweiss-kueche/"].join("\n");
+}
+function terminZeiten(tag, e) {
+  const [y, m, d] = tag.split("-").map(Number); const [h, mi] = e.zeit.split(":").map(Number);
+  const a = new Date(y, m - 1, d, h, mi), b = new Date(y, m - 1, d, h, mi + (MEAL_DAUER[e.meal] || 45));
+  const f = x => `${x.getFullYear()}${pad(x.getMonth() + 1)}${pad(x.getDate())}T${pad(x.getHours())}${pad(x.getMinutes())}00`;
+  return [f(a), f(b)];
+}
+function googleLink(tag, e) {
+  const r = rezeptNach(e.rezept); const [a, b] = terminZeiten(tag, e);
+  return "https://calendar.google.com/calendar/render?action=TEMPLATE&text=" + encodeURIComponent(`${mealName(e.meal)}: ${r.name}`)
+    + `&dates=${a}/${b}&ctz=Europe/Berlin&details=` + encodeURIComponent(terminText(r, e));
+}
+function wocheAlsIcs(start) {
+  const esc_ = t => String(t).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+  const falten = z => { const o = []; let rest = z; while (rest.length > 74) { o.push(rest.slice(0, 74)); rest = " " + rest.slice(74); } o.push(rest); return o.join("\r\n"); };
+  const jetzt = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const zeilen = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Eiweiss-Kueche//Essensplan//DE", "CALSCALE:GREGORIAN"];
+  let n = 0;
+  for (let i = 0; i < 7; i++) {
+    const tag = datumPlus(start, i);
+    for (const e of plan[tag] || []) {
+      const r = rezeptNach(e.rezept); if (!r) continue; const [a, b] = terminZeiten(tag, e); n++;
+      zeilen.push("BEGIN:VEVENT", `UID:${e.id}-${tag}@eiweiss-kueche`, `DTSTAMP:${jetzt}`, `DTSTART:${a}`, `DTEND:${b}`, falten("SUMMARY:" + esc_(`${mealName(e.meal)}: ${r.name}`)), falten("DESCRIPTION:" + esc_(terminText(r, e))), "END:VEVENT");
+    }
+  }
+  zeilen.push("END:VCALENDAR");
+  return { text: zeilen.join("\r\n") + "\r\n", anzahl: n };
+}
+
+function viewPlan() {
+  const start = ui.woche; const h = heute();
+  let gesamtPlan = 0;
+  const tage = Array.from({ length: 7 }, (_, i) => {
+    const tag = datumPlus(start, i); const l = (plan[tag] || []).slice().sort((a, b) => a.zeit.localeCompare(b.zeit));
+    gesamtPlan += l.length;
+    const kcal = l.reduce((s, e) => { const r = rezeptNach(e.rezept); const pp = r ? rezeptProPortion(r) : null; return s + (pp && !(pp.fehlt && !r.eigen) ? pp.n.kcal : 0); }, 0);
+    const [y, m, d] = tag.split("-").map(Number); const wt = new Date(y, m - 1, d).toLocaleDateString("de-DE", { weekday: "long" });
+    return `<section class="plan-tag${tag === h ? " heute" : ""}">
+      <div class="mz-kopf"><h3>${wt}<small>${esc(kurzDatum(tag))}</small></h3><span class="zahl leise">${kcal ? f0(kcal) + " kcal" : ""}</span><button class="rund" data-act="plan-plus" data-d="${tag}" aria-label="${wt} etwas einplanen">+</button></div>
+      ${l.length ? `<ul class="eintraege">${l.map(e => { const r = rezeptNach(e.rezept); return `<li><button data-act="plan-eintrag" data-d="${tag}" data-id="${esc(e.id)}"><span class="en"><b>${esc(r.name)}</b><small>${esc(mealName(e.meal))} · ${esc(e.zeit)} Uhr · ${e.por === 1 ? "1 Portion" : e.por + " Portionen"}${e.aufListe ? " · auf der Liste" : ""}</small></span><span class="zahl leise">›</span></button></li>`; }).join("")}</ul>` : ""}
+    </section>`;
+  }).join("");
+  return `<h2 class="seitentitel">Essensplan</h2>
+  <div class="datum-leiste">
+    <button class="rund" data-act="woche" data-d="-7" aria-label="Vorige Woche">‹</button>
+    <button class="datum klein" data-act="woche-heute">KW ${kalenderwoche(start)}<small>${esc(kurzDatum(start))} bis ${esc(kurzDatum(datumPlus(start, 6)))}</small></button>
+    <button class="rund" data-act="woche" data-d="7" aria-label="Nächste Woche">›</button>
+  </div>
+  ${gesamtPlan ? `<div class="knoepfe"><button class="knopf voll" data-act="plan-liste">Zutaten der Woche auf die Einkaufsliste</button><button class="knopf" data-act="plan-ics">Woche als Kalenderdatei</button></div>` : `<p class="leise">Tipp bei einem Tag auf +, um ein Rezept einzuplanen. Jeden Eintrag kannst du danach in deinen Google Kalender übernehmen.</p>`}
+  ${tage}`;
+}
+
+// Einplanen: Rezept wählen (falls noch keins), dann Tag, Mahlzeit, Uhrzeit und Portionen
+function planSheet(tag, rezeptId) {
+  let gewaehlt = rezeptId || null, q = "", filter = ui.filter === "mild" ? "mild" : "alle";
+  let datum = tag || heute(), meal = "mittag", zeit = MEAL_ZEIT.mittag, por = 1, fertig = null;
+  sheetOeffnen(s => {
+    const zeichnen = () => {
+      if (fertig) {
+        const r = rezeptNach(fertig.e.rezept);
+        s.innerHTML = `<div class="sh-kopf"><button class="rund" data-p2="zu" aria-label="Schließen">×</button><span class="leise">Eingeplant</span></div>
+          <h2>${esc(r.name)}</h2><p class="leise">${esc(datumText(fertig.tag))}, ${esc(mealName(fertig.e.meal))} um ${esc(fertig.e.zeit)} Uhr, ${fertig.e.por === 1 ? "1 Portion" : fertig.e.por + " Portionen"}</p>
+          <div class="sh-fuss"><a class="knopf voll" href="${esc(googleLink(fertig.tag, fertig.e))}" target="_blank" rel="noopener noreferrer">In Google Kalender eintragen</a><button class="knopf" data-p2="zu">Fertig</button></div>
+          <p class="fuss">Google Kalender öffnet sich mit dem fertigen Termin samt Zutaten, du musst nur noch auf Speichern tippen.</p>`;
+        return;
+      }
+      if (!gewaehlt) {
+        const l = alleRezepte().filter(r => (filter === "alle" || (r.scharf || "mild") === "mild") && (!q || norm(r.name + " " + (r.mit || "")).includes(norm(q))));
+        s.innerHTML = `<div class="sh-kopf"><button class="rund" data-p2="zu" aria-label="Schließen">×</button><span class="leise">Was soll es geben?</span></div>
+          <input id="plan-suche" type="search" placeholder="Rezept suchen" autocomplete="off" value="${esc(q)}" aria-label="Rezept suchen">
+          <div class="chips"><button class="chip" data-p2="f" data-v="alle" aria-pressed="${filter === "alle"}">Alle</button><button class="chip" data-p2="f" data-v="mild" aria-pressed="${filter === "mild"}">Nur mild</button></div>
+          <ul class="treffer">${l.map(r => { const pp = rezeptProPortion(r); return `<li><button data-p2="wahl" data-id="${esc(r.id)}"><span class="en"><b>${esc(r.name)}</b><small>${r.mit ? "mit " + esc(r.mit) : "eigenes Rezept"}${SCHARF[r.scharf] && r.scharf !== "mild" ? " · " + SCHARF[r.scharf] : ""}</small></span><span class="zahl leise">${pp.fehlt && !r.eigen ? "" : f0(pp.n.kcal) + " kcal"}</span></button></li>`; }).join("") || `<li class="leise">Kein Rezept gefunden.</li>`}</ul>`;
+        const i = $("#plan-suche", s); i.addEventListener("input", () => { q = i.value; const pos = i.selectionStart; zeichnen(); const n = $("#plan-suche", s); n.focus(); n.setSelectionRange(pos, pos); });
+        return;
+      }
+      const r = rezeptNach(gewaehlt);
+      s.innerHTML = `<div class="sh-kopf">${rezeptId ? `<button class="rund" data-p2="zu" aria-label="Schließen">×</button>` : `<button class="rund" data-p2="zurueck" aria-label="Zurück">‹</button>`}<span class="leise">Einplanen</span></div>
+        <h2>${esc(r.name)}</h2>
+        <div class="formular">
+          <label>Tag<input id="plan-datum" type="date" value="${esc(datum)}"></label>
+          <div class="chips">${MAHLZEITEN.map(([id, t]) => `<button class="chip" data-p2="meal" data-v="${id}" aria-pressed="${meal === id}">${t}</button>`).join("")}</div>
+          <div class="raster"><label>Uhrzeit<input id="plan-zeit" type="time" value="${esc(zeit)}"></label>
+          <div class="por-zeile"><span>Portionen</span><div class="stepper"><button data-p2="por-" aria-label="Weniger" ${por <= 1 ? "disabled" : ""}>−</button><output class="zahl">${por}</output><button data-p2="por+" aria-label="Mehr">+</button></div></div></div>
+        </div>
+        <div class="sh-fuss"><button class="knopf voll" data-p2="ok">Einplanen</button></div>`;
+    };
+    const lesen = () => { const d = $("#plan-datum", s), z = $("#plan-zeit", s); if (d && /^\d{4}-\d{2}-\d{2}$/.test(d.value)) datum = d.value; if (z && /^([01]\d|2[0-3]):[0-5]\d$/.test(z.value)) zeit = z.value; };
+    zeichnen();
+    s.onclick = ev => {
+      const b = ev.target.closest("[data-p2]"); if (!b) return; const a = b.dataset.p2;
+      if (a === "zu") sheetSchliessen();
+      else if (a === "f") { filter = b.dataset.v; zeichnen(); }
+      else if (a === "wahl") { gewaehlt = b.dataset.id; zeichnen(); }
+      else if (a === "zurueck") { gewaehlt = null; zeichnen(); }
+      else if (a === "meal") { lesen(); const alt = meal; meal = b.dataset.v; if (zeit === MEAL_ZEIT[alt]) zeit = MEAL_ZEIT[meal]; zeichnen(); }
+      else if (a === "por-") { lesen(); if (por > 1) { por--; zeichnen(); } }
+      else if (a === "por+") { lesen(); if (por < 20) { por++; zeichnen(); } }
+      else if (a === "ok") {
+        lesen();
+        const e = { id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), rezept: gewaehlt, meal, por, zeit, aufListe: false };
+        (plan[datum] || (plan[datum] = [])).push(e); sichern("plan", plan);
+        ui.woche = wochenStart(datum); fertig = { tag: datum, e }; zeichnen();
+      }
+    };
+  });
+}
+function planEintragSheet(tag, id) {
+  const e = (plan[tag] || []).find(x => x.id === id); if (!e) return; const r = rezeptNach(e.rezept); if (!r) return;
+  sheetOeffnen(s => {
+    let loeschBereit = false;
+    s.innerHTML = `<div class="sh-kopf"><button class="rund" data-p3="zu" aria-label="Schließen">×</button><span class="leise">${esc(datumText(tag))}, ${esc(mealName(e.meal))} um ${esc(e.zeit)} Uhr</span></div>
+      <h2>${esc(r.name)}</h2><p class="leise">${e.por === 1 ? "1 Portion" : e.por + " Portionen"}${e.aufListe ? ", Zutaten stehen auf der Einkaufsliste" : ""}</p>
+      <div class="plan-aktionen">
+        <a class="knopf voll" href="${esc(googleLink(tag, e))}" target="_blank" rel="noopener noreferrer">In Google Kalender eintragen</a>
+        ${rezeptProPortion(r).fehlt && !r.eigen ? "" : `<button class="knopf" data-p3="gegessen">Als gegessen eintragen</button>`}
+        <button class="knopf" data-p3="rezept">Rezept ansehen</button>
+        ${e.aufListe ? "" : `<button class="knopf" data-p3="liste">Zutaten auf die Einkaufsliste</button>`}
+        <button class="knopf warn" data-p3="weg">Aus dem Plan nehmen</button>
+      </div>`;
+    s.onclick = ev => {
+      const b = ev.target.closest("[data-p3]"); if (!b) return; const a = b.dataset.p3;
+      if (a === "zu") sheetSchliessen();
+      else if (a === "gegessen") sheetSchliessen(() => mengeSheet(lmAusRezept(r), { meal: e.meal, datum: tag }));
+      else if (a === "rezept") sheetSchliessen(() => rezeptOeffnen(r.id));
+      else if (a === "liste") { rezeptAufListe(r.id, e.por); e.aufListe = true; sichern("plan", plan); sheetSchliessen(() => toast("Zutaten stehen auf der Einkaufsliste")); }
+      else if (a === "weg") {
+        if (!loeschBereit) { loeschBereit = true; b.textContent = "Wirklich aus dem Plan nehmen?"; return; }
+        plan[tag] = plan[tag].filter(x => x.id !== id); if (!plan[tag].length) delete plan[tag]; sichern("plan", plan); sheetSchliessen(() => toast("Aus dem Plan genommen"));
+      }
+    };
+  });
+}
+
 // ---------- Einkauf ----------
 // Die Liste startet leer. Rezepte kommen mit Portionen dazu, ihre Zutaten werden zusammengezählt.
 // Einzelne Rezeptzutaten lassen sich ausblenden (weg) oder mit eigener Menge versehen (anders).
@@ -1292,7 +1459,7 @@ function garminStatusText(d) {
   return `Verbunden. Heute ${n === 0 ? "noch kein Training" : n === 1 ? "1 Training" : n + " Trainings"}${d.schritte != null ? `, ${f0(d.schritte)} Schritte` : ""}.`;
 }
 function exportieren() {
-  const daten = { app: "eiweiss-kueche", version: VERSION, gesichert: new Date().toISOString(), ziele, profil, tagebuch, produkte, rezepte: eigeneRezepte, liste, zuletzt };
+  const daten = { app: "eiweiss-kueche", version: VERSION, gesichert: new Date().toISOString(), ziele, profil, tagebuch, produkte, rezepte: eigeneRezepte, liste, zuletzt, plan };
   const url = URL.createObjectURL(new Blob([JSON.stringify(daten)], { type: "application/json" }));
   const l = document.createElement("a"); l.href = url; l.download = `eiweiss-kueche-${heute()}.json`; document.body.appendChild(l); l.click(); l.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000); toast("Sicherung erstellt");
@@ -1361,6 +1528,22 @@ document.addEventListener("click", ev => {
   if (a === "tag") { ui.datum = datumPlus(ui.datum, +b.dataset.d); render(); }
   else if (a === "heute") { ui.datum = heute(); render(); }
   else if (a === "kalender") kalenderSheet();
+  else if (a === "woche") { ui.woche = datumPlus(ui.woche, +b.dataset.d); render(); }
+  else if (a === "woche-heute") { ui.woche = wochenStart(heute()); render(); }
+  else if (a === "plan-plus") planSheet(b.dataset.d, null);
+  else if (a === "plan-eintrag") planEintragSheet(b.dataset.d, b.dataset.id);
+  else if (a === "plan-liste") {
+    let n = 0;
+    for (let i = 0; i < 7; i++) for (const e of plan[datumPlus(ui.woche, i)] || []) if (!e.aufListe && rezeptNach(e.rezept)) { rezeptAufListe(e.rezept, e.por); e.aufListe = true; n++; }
+    sichern("plan", plan); render(); toast(n ? `${n} ${n === 1 ? "Rezept" : "Rezepte"} auf die Einkaufsliste gesetzt` : "Alles aus dieser Woche steht schon auf der Liste");
+  }
+  else if (a === "plan-ics") {
+    const { text, anzahl } = wocheAlsIcs(ui.woche);
+    if (!anzahl) { toast("In dieser Woche ist nichts geplant"); return; }
+    const url = URL.createObjectURL(new Blob([text], { type: "text/calendar" }));
+    const l = document.createElement("a"); l.href = url; l.download = `essensplan-kw${kalenderwoche(ui.woche)}.ics`; document.body.appendChild(l); l.click(); l.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3000); toast(`${anzahl} Termine als Kalenderdatei gespeichert`);
+  }
   else if (a === "details") { ui.details = !ui.details; render(); }
   else if (a === "hinzu") suchSheet({ meal: b.dataset.meal });
   else if (a === "eintrag") {
@@ -1432,7 +1615,7 @@ document.addEventListener("change", ev => {
             if (b.dataset.i === "zu") { sheetSchliessen(); return; }
             if (b.dataset.i === "vorher") { exportieren(); return; }
             if (!allesSichern(neu)) { toast("Einspielen hat nicht geklappt, deine bisherigen Daten sind noch da"); return; }
-            ({ ziele, profil, tagebuch, produkte, zuletzt, liste } = neu); eigeneRezepte = neu.rezepte;
+            ({ ziele, profil, tagebuch, produkte, zuletzt, liste, plan } = neu); eigeneRezepte = neu.rezepte;
             sheetSchliessen(() => toast("Sicherung eingespielt"));
           };
         });
