@@ -10,7 +10,7 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="./icon-192.png">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://world.openfoodfacts.org; media-src 'self' blob:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://world.openfoodfacts.org https://*.workers.dev; media-src 'self' blob:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <style>
 /* Schriften liegen in der App (SIL Open Font License), kein Abruf bei Google */
@@ -179,6 +179,12 @@ table.naehr{width:100%;border-collapse:collapse;font-size:14px}
 .regler input[type=range]{width:100%;accent-color:var(--accent);height:32px;padding:0;border:0;background:transparent}
 .regler .r-wert{color:var(--muted);font-size:14px;min-height:2.6em}
 .naehr tr.summe th,.naehr tr.summe td{font-weight:700;border-bottom:2px solid var(--ink)}
+.g-liste{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.g-liste li{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.g-liste .zahl{font-size:13px;white-space:nowrap}
+.garmin-karte{gap:8px}
+.summe-karte{gap:8px}
+.summe-karte .unter{margin:0}
 .foto{display:contents}
 .foto .fuss{margin:-6px 0 0}
 .ocr-bild{display:block;width:100%;max-height:170px;object-fit:contain;background:var(--surface);border:1px solid var(--line);border-radius:12px;position:sticky;top:0;z-index:2}

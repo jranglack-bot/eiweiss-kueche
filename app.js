@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -123,23 +123,23 @@ function refSauber(r) { return r && ["p", "b", "r"].includes(r.typ) ? { typ: r.t
 function lmSauber(lm) {
   const o = { name: str(lm.name) || "Lebensmittel", sub: str(lm.sub), ref: refSauber(lm.ref) };
   if (lm.proPortion) o.proPortion = nSauber(lm.proPortion, 100000); else o.n100 = nSauber(lm.n100, 1000);
-  const pg = nz(lm.portion_g, 100000), kg = nz(lm.packung_g, 100000); if (pg) o.portion_g = pg; if (kg) o.packung_g = kg;
+  const pg = nz(lm.portion_g, 100000), kg = nz(lm.packung_g, 100000), sg = nz(lm.stueck_g, 100000); if (pg) o.portion_g = pg; if (kg) o.packung_g = kg; if (sg) o.stueck_g = sg;
   return o;
 }
 function produktSauber(p, id) {
   return { id, code: /^\d{8,14}$/.test(p.code || "") ? p.code : "", name: str(p.name) || "Produkt", marke: str(p.marke), n100: nSauber(p.n100, 1000),
-    portion_g: nz(p.portion_g, 100000), packung_g: nz(p.packung_g, 100000), quelle: p.quelle === "off" ? "off" : "eigen", t: nz(p.t, 1e15) || 0 };
+    portion_g: nz(p.portion_g, 100000), packung_g: nz(p.packung_g, 100000), stueck_g: nz(p.stueck_g, 100000), quelle: p.quelle === "off" ? "off" : "eigen", t: nz(p.t, 1e15) || 0 };
 }
 function rezeptSauber(r) {
   return { id: ID_OK.test(r.id || "") ? r.id : "eig" + Math.random().toString(36).slice(2, 9), eigen: true, name: str(r.name) || "Rezept", mit: str(r.mit),
     portionen: Math.max(1, Math.min(20, parseInt(r.portionen, 10) || 1)), scharf: SCHARF[r.scharf] ? r.scharf : "mild", mild: str(r.mild, 600),
-    zutaten: (Array.isArray(r.zutaten) ? r.zutaten : []).slice(0, 60).filter(z => z && typeof z === "object").map(z => ({ name: str(z.name) || "Zutat", gramm: nz(z.gramm, 100000) || 0, n100: nSauber(z.n100, 1000), ref: refSauber(z.ref) })),
+    zutaten: (Array.isArray(r.zutaten) ? r.zutaten : []).slice(0, 60).filter(z => z && typeof z === "object").map(z => ({ name: str(z.name) || "Zutat", gramm: nz(z.gramm, 100000) || 0, anzeige: str(z.anzeige, 40), n100: nSauber(z.n100, 1000), ref: refSauber(z.ref) })),
     steps: (Array.isArray(r.steps) ? r.steps : []).slice(0, 40).map(x => str(x, 600)).filter(Boolean), tipp: str(r.tipp, 600) };
 }
 function eintragSauber(e) {
   return { id: ID_OK.test(e.id || "") ? e.id : "e" + Math.random().toString(36).slice(2, 10), meal: ["frueh", "mittag", "abend", "snack"].includes(e.meal) ? e.meal : "snack",
     name: str(e.name) || "Eintrag", sub: str(e.sub), ref: refSauber(e.ref), menge: nz(e.menge, 100000) || 0,
-    einheit: ["g", "portion", "packung"].includes(e.einheit) ? e.einheit : "g", gramm: nz(e.gramm, 100000), n: nSauber(e.n, 100000), t: nz(e.t, 1e15) || 0 };
+    einheit: ["g", "portion", "packung", "stueck"].includes(e.einheit) ? e.einheit : "g", gramm: nz(e.gramm, 100000), n: nSauber(e.n, 100000), t: nz(e.t, 1e15) || 0 };
 }
 function datenSauber(d) {
   d = d && typeof d === "object" ? d : {};
@@ -180,6 +180,46 @@ const gespeichert = datenSauber(Object.fromEntries(SPEICHER_TEILE.map(k => [k, l
 let { ziele, profil, tagebuch, produkte, zuletzt, liste } = gespeichert;
 try { localStorage.removeItem(LS + "einkauf"); } catch (e) {} // alte, feste Einkaufsliste aus Version 1.0
 let eigeneRezepte = gespeichert.rezepte;
+
+// ---------- Garmin ----------
+// Die App fragt Julians Cloudflare-Worker (garmin-worker/worker.js) nach den Trainings eines Tages.
+// Adresse und Zugangscode liegen nur auf dem Handy und kommen nicht in die Datensicherung.
+function garminSauber(g) {
+  if (!g || typeof g !== "object") return null;
+  const url = str(g.url, 200).trim().replace(/\/+$/, "");
+  if (!/^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.workers\.dev$/i.test(url) || str(g.code, 100).length < 16) return null;
+  return { url, code: str(g.code, 100), anteil: [50, 75, 100].includes(Number(g.anteil)) ? Number(g.anteil) : 75 };
+}
+function garminDatenSauber(d) {
+  d = d && typeof d === "object" ? d : {};
+  return { aktivitaeten: (Array.isArray(d.aktivitaeten) ? d.aktivitaeten : []).slice(0, 20).filter(a => a && typeof a === "object").map(a => ({ name: str(a.name, 80) || "Aktivität", kcal: nz(a.kcal, 20000) || 0, ruheKcal: nz(a.ruheKcal, 20000) || 0, minuten: nz(a.minuten, 2000) || 0, start: str(a.start, 16) })),
+    aktivKcalTag: nz(d.aktivKcalTag, 20000), schritte: nz(d.schritte, 200000) };
+}
+let garmin = garminSauber(laden("garmin", null));
+let garminTage = {};
+{ const t = laden("garminTage", {}); if (t && typeof t === "object") for (const [k, v] of Object.entries(t)) if (/^\d{4}-\d{2}-\d{2}$/.test(k) && v && typeof v === "object") garminTage[k] = v.fehler ? { t: nz(v.t, 1e15) || 0, fehler: str(v.fehler, 160) } : { t: nz(v.t, 1e15) || 0, final: !!v.final, d: garminDatenSauber(v.d) }; }
+const garminLaeuft = {};
+// Trainingskalorien ohne Ruheverbrauch, davon der eingestellte Anteil (Uhren schätzen eher zu hoch)
+function sportKcal(e) { if (!garmin || !e || !e.d) return 0; const netto = e.d.aktivitaeten.reduce((s, a) => s + Math.max(0, a.kcal - (a.ruheKcal || 0)), 0); return Math.round(netto * garmin.anteil / 100); }
+async function garminAbfragen(cfg, datum) {
+  const r = await fetch(`${cfg.url}/?datum=${datum}`, { headers: { "X-Zugang": cfg.code }, cache: "no-store" });
+  let d = {}; try { d = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(str(d && d.fehler, 160) || "Antwort " + r.status);
+  return garminDatenSauber(d);
+}
+async function garminAktualisieren(datum, erzwingen) {
+  if (!garmin || garminLaeuft[datum]) return;
+  const c = garminTage[datum]; const alter = c ? Date.now() - c.t : Infinity;
+  if (!erzwingen && c && !c.fehler && (datum < heute() ? c.final : alter < 15 * 60e3)) return;
+  if (!erzwingen && c && c.fehler && alter < 2 * 60e3) return;
+  garminLaeuft[datum] = true;
+  try { garminTage[datum] = { t: Date.now(), final: datum < heute(), d: await garminAbfragen(garmin, datum) }; }
+  catch (e) { garminTage[datum] = { t: Date.now(), fehler: str(e.message, 160) || "keine Verbindung" }; fehlerMerken("Garmin: " + e.message); }
+  finally { delete garminLaeuft[datum]; }
+  const tage = Object.keys(garminTage).sort(); while (tage.length > 30) delete garminTage[tage.shift()];
+  sichern("garminTage", garminTage);
+  if (ui.tab === "tagebuch" && ui.datum === datum && !sheets.length) render();
+}
 
 // ---------- Toast und Sheets ----------
 let toastT;
@@ -227,6 +267,7 @@ function render() {
   else if (ui.tab === "einkauf") main.innerHTML = viewEinkauf();
   else main.innerHTML = viewProfil();
   $("#scan-fab").hidden = ui.tab !== "tagebuch";
+  if (ui.tab === "tagebuch" && garmin) garminAktualisieren(ui.datum);
 }
 function tabSetzen(t) { ui.tab = t; sichern("tab", t); render(); window.scrollTo(0, 0); }
 
@@ -244,13 +285,17 @@ function balken(wert, ziel, klasse = "") {
 function mengeText(e) {
   if (e.einheit === "portion") return `${fmtNum(e.menge)} ${e.menge === 1 ? "Portion" : "Portionen"}${e.gramm ? ` · ${f0(e.gramm)} g` : ""}`;
   if (e.einheit === "packung") return `${fmtNum(e.menge)} × Packung · ${f0(e.gramm)} g`;
+  if (e.einheit === "stueck") return `${fmtNum(e.menge)} Stück · ${f0(e.gramm)} g`;
   return `${f0(e.menge)} g`;
 }
 
 function viewTagebuch() {
   const tag = tagebuch[ui.datum] || [];
   const s = summe(tag);
-  const kcal = s.n.kcal; const rest = Math.round(ziele.kcal - kcal);
+  const g = garmin ? garminTage[ui.datum] : null; const sport = sportKcal(g);
+  // Sport von der Uhr erhöht das Tagesziel, die zusätzlichen Kalorien gehen in die Kohlenhydrate
+  const zielKcal = ziele.kcal + sport, zielKh = ziele.kh + Math.round(sport / 4);
+  const kcal = s.n.kcal; const rest = Math.round(zielKcal - kcal);
   const makro = (lab, k, ziel) => `<div class="makro"><div class="mk-kopf"><span>${lab}</span><span class="zahl">${f0(s.n[k])} / ${f0(ziel)} g</span></div>${balken(s.n[k], ziel, "m-" + k)}</div>`;
   const zeilen = MAHLZEITEN.map(([id, titel]) => {
     const liste = tag.filter(e => e.meal === id); const ks = liste.reduce((a, e) => a + (e.n.kcal || 0), 0);
@@ -270,14 +315,26 @@ function viewTagebuch() {
   <section class="karte bilanz">
     <div class="b-oben">
       <div><span class="gross zahl">${rest >= 0 ? f0(rest) : f0(-rest)}</span><span class="leise">${rest >= 0 ? "kcal übrig" : "kcal drüber"}</span></div>
-      <div class="b-rechts"><span class="zahl">${f0(kcal)}</span><span class="leise">von ${f0(ziele.kcal)} gegessen</span></div>
+      <div class="b-rechts"><span class="zahl">${f0(kcal)}</span><span class="leise">von ${f0(zielKcal)} gegessen${sport ? `<br>inkl. ${f0(sport)} Sport` : ""}</span></div>
     </div>
-    ${balken(kcal, ziele.kcal, "kcal")}
-    <div class="makros">${makro("Eiweiß", "eiw", ziele.eiw)}${makro("Kohlenhydrate", "kh", ziele.kh)}${makro("Fett", "fett", ziele.fett)}</div>
+    ${balken(kcal, zielKcal, "kcal")}
+    <div class="makros">${makro("Eiweiß", "eiw", ziele.eiw)}${makro("Kohlenhydrate", "kh", zielKh)}${makro("Fett", "fett", ziele.fett)}</div>
     <button class="text-knopf" data-act="details">${ui.details ? "Weniger anzeigen" : "Alle Nährwerte des Tages"}</button>
     ${det}
   </section>
+  ${garmin ? garminTagKarte(g, sport) : ""}
   ${zeilen}`;
+}
+function garminTagKarte(g, sport) {
+  let inhalt;
+  if (!g) inhalt = `<p class="leise lade">Frage deine Garmin-Daten ab …</p>`;
+  else if (g.fehler) inhalt = `<p class="leise">Garmin gerade nicht erreichbar: ${esc(g.fehler)}</p>`;
+  else {
+    const l = g.d.aktivitaeten;
+    inhalt = (l.length ? `<ul class="g-liste">${l.map(a => `<li><span class="en"><b>${esc(a.name)}</b><small>${a.start ? esc(a.start.slice(11, 16)) + " Uhr · " : ""}${f0(a.minuten)} min</small></span><span class="zahl">${f0(Math.max(0, a.kcal - (a.ruheKcal || 0)))} kcal</span></li>`).join("")}</ul>` : `<p class="leise">Heute noch kein Training aufgezeichnet.</p>`)
+      + `<p class="fuss">${l.length ? `Angerechnet: ${garmin.anteil} % der Trainingskalorien ohne Ruheverbrauch.` : ""}${g.d.schritte != null ? ` Schritte: ${f0(g.d.schritte)}.` : ""}</p>`;
+  }
+  return `<section class="karte garmin-karte"><div class="mz-kopf"><h3>Sport von der Uhr</h3><span class="zahl leise">${sport ? "+ " + f0(sport) + " kcal" : ""}</span><button class="rund" data-act="garmin-neu" aria-label="Garmin neu abfragen">↻</button></div>${inhalt}</section>`;
 }
 function detailTabelle(s) {
   const z = (lab, k, e = "g", einr = false) => `<tr class="${einr ? "einr" : ""}"><th>${lab}</th><td class="zahl">${k === "kcal" ? f0(s.n[k]) : f1(s.n[k])} ${e}${s.fehlt[k] ? ` <small title="bei ${s.fehlt[k]} Einträgen ohne Angabe">*</small>` : ""}</td></tr>`;
@@ -314,7 +371,7 @@ function viewRezepte() {
 }
 
 function rezeptZutatenHtml(items, por, eigen, portionen) {
-  if (eigen) return items.map(z => `<li><span class="m">${f0(z.gramm * por / (portionen || 1))} g</span><span>${esc(z.name)}</span></li>`).join("");
+  if (eigen) return items.map(z => `<li><span class="m">${f0(z.gramm * por / (portionen || 1))} g</span><span>${esc(z.name)}${z.anzeige && por === portionen ? `<span class="h">${esc(z.anzeige)}</span>` : ""}</span></li>`).join("");
   return items.map(it => {
     const b = it.c ? BASIS[it.c] : null; const name = it.t || (b.rn || b.n); const u = it.u || (b && b.u);
     let m = it.x ? it.x : (typeof it.a === "number" ? mengeFmt(it.a * por, u) : "");
@@ -404,7 +461,7 @@ document.addEventListener("visibilitychange", async () => {
 
 // ---------- Lebensmittel-Objekte ----------
 function lmAusRezept(r) { const pp = rezeptProPortion(r); return { name: r.name, sub: "Rezept", ref: { typ: "r", id: r.id }, proPortion: pp.n }; }
-function lmAusProdukt(p) { return { name: p.name, sub: p.marke || (p.quelle === "eigen" ? "eigenes Produkt" : ""), ref: { typ: "p", id: p.id }, n100: p.n100, portion_g: p.portion_g, packung_g: p.packung_g }; }
+function lmAusProdukt(p) { return { name: p.name, sub: p.marke || (p.quelle === "eigen" ? "eigenes Produkt" : ""), ref: { typ: "p", id: p.id }, n100: p.n100, portion_g: p.portion_g, packung_g: p.packung_g, stueck_g: p.stueck_g }; }
 function lmAusBLS(b) { return { name: b.name, sub: "BLS", ref: { typ: "b", id: b.code }, n100: b.n100 }; }
 const refKey = r => r.typ + ":" + r.id;
 function zuletztMerken(lm) {
@@ -423,6 +480,7 @@ function einheiten(lm) {
   const l = [{ u: "g", lab: "Gramm", g: 1 }];
   if (lm.portion_g > 0) l.push({ u: "portion", lab: `Portion (${f0(lm.portion_g)} g)`, g: lm.portion_g });
   if (lm.packung_g > 0) l.push({ u: "packung", lab: `Packung (${f0(lm.packung_g)} g)`, g: lm.packung_g });
+  if (lm.stueck_g > 0) l.push({ u: "stueck", lab: `Stück (${f0(lm.stueck_g)} g)`, g: lm.stueck_g });
   return l;
 }
 function berechnen(lm, menge, einheit) {
@@ -448,7 +506,7 @@ function mengeInhalt(s, lm, opts) {
       ${zutatModus ? "" : `<div class="chips">${MAHLZEITEN.map(([id, t]) => `<button class="chip" data-m="meal" data-v="${id}" aria-pressed="${meal === id}">${t}</button>`).join("")}</div>`}
       <div class="menge-zeile">
         <div class="stepper gross"><button data-m="minus" aria-label="Weniger">−</button><input id="menge" class="zahl" inputmode="decimal" value="${esc(String(menge).replace(".", ","))}" aria-label="Menge"><button data-m="plus" aria-label="Mehr">+</button></div>
-        ${zutatModus ? `<span>Gramm</span>` : `<div class="einheiten">${einh.map(x => `<button class="chip" data-m="einheit" data-v="${x.u}" aria-pressed="${einheit === x.u}">${esc(x.lab)}</button>`).join("")}</div>`}
+        <div class="einheiten">${einh.map(x => `<button class="chip" data-m="einheit" data-v="${x.u}" aria-pressed="${einheit === x.u}">${esc(x.lab)}</button>`).join("")}</div>
       </div>
       <div class="vorschau">
         <div><span class="gross zahl">${f0(r.n.kcal)}</span><span class="leise">kcal</span></div>
@@ -492,7 +550,11 @@ function mengeInhalt(s, lm, opts) {
     else if (a === "ok") {
       if (!(menge > 0)) { toast("Bitte eine Menge eingeben"); return; }
       const r = berechnen(lm, menge, einheit);
-      if (zutatModus) { opts.onPick(lm, r.gramm); return; }
+      if (zutatModus) {
+        const e = einh.find(x => x.u === einheit);
+        const anzeige = einheit === "g" ? "" : `${fmtNum(menge)} ${e ? e.lab.replace(/ \(.*\)$/, "") : einheit}`;
+        opts.onPick(lm, r.gramm, anzeige); return;
+      }
       const datum = opts.datum || ui.datum;
       const neu = { id: eintrag ? eintrag.id : "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), meal, name: lm.name, sub: lm.sub || "", ref: lm.ref, menge, einheit, gramm: r.gramm, n: r.n, t: eintrag ? eintrag.t : Date.now() };
       const liste = tagebuch[datum] || (tagebuch[datum] = []);
@@ -558,7 +620,7 @@ function suchSheet(opts) {
     const weiterMit = lm => {
       if (lm._off) { const p = lm._off; delete lm._off; produkte[p.id] = p; sichern("produkte", produkte); lm = lmAusProdukt(p); }
       const zurueck = () => startseite();
-      if (opts.modus === "zutat") mengeInhalt(s, lm, { modus: "zutat", zurueck, onPick: (l, g) => { sheetSchliessen(() => opts.onPick(l, g)); } });
+      if (opts.modus === "zutat") mengeInhalt(s, lm, { modus: "zutat", zurueck, onPick: (l, g, anzeige) => { sheetSchliessen(() => opts.onPick(l, g, anzeige)); } });
       else mengeInhalt(s, lm, { meal: opts.meal, zurueck });
     };
     s.addEventListener("click", ev => {
@@ -630,6 +692,7 @@ function produktForm(s, opts) {
       <div class="raster">
         <label>Portion in g<input id="pf-portion" inputmode="decimal" value="${wert(p.portion_g)}"></label>
         <label>Packung in g<input id="pf-packung" inputmode="decimal" value="${wert(p.packung_g)}"></label>
+        <label>1 Stück wiegt (g)<input id="pf-stueck" inputmode="decimal" value="${wert(p.stueck_g)}" placeholder="zum Beispiel Ei 60"></label>
       </div>
       <p class="leise">* Pflichtfelder. Komma oder Punkt, beides geht.</p>
       <div class="sh-fuss"><button class="knopf voll" type="submit">Speichern</button>${opts.produkt && produkte[p.id] && !opts.neu ? `<button class="knopf warn" type="button" data-p="loesch">Produkt löschen</button>` : ""}</div>
@@ -655,7 +718,7 @@ function produktForm(s, opts) {
     if (code && !/^\d{8,14}$/.test(code)) { toast("Der Barcode hat 8 bis 14 Ziffern"); return; }
     const id = code || p.id || "eig" + Date.now().toString(36);
     if (p.id && p.id !== id) delete produkte[p.id];
-    const neu = { id, code, name, marke: $("#pf-marke", s).value.trim(), n100, portion_g: zahl($("#pf-portion", s).value), packung_g: zahl($("#pf-packung", s).value), quelle: "eigen", t: Date.now() };
+    const neu = produktSauber({ id, code, name, marke: $("#pf-marke", s).value.trim(), n100, portion_g: zahl($("#pf-portion", s).value), packung_g: zahl($("#pf-packung", s).value), stueck_g: zahl($("#pf-stueck", s).value), quelle: "eigen", t: Date.now() }, id);
     produkte[id] = neu; sichern("produkte", produkte); toast("Produkt gespeichert");
     if (opts.weiter) opts.weiter(neu); else sheetSchliessen();
   });
@@ -880,6 +943,17 @@ function scannerOeffnen(beiCode) {
 }
 
 // ---------- Eigenes Rezept ----------
+// Live-Übersicht im Editor: alle Zutaten zusammengerechnet, geteilt durch die Portionen
+function editorSumme(r) {
+  if (!r.zutaten.length) return "";
+  const pp = rezeptProPortion(r); const n = pp.n; const g = r.zutaten.reduce((a, z) => a + (z.gramm || 0), 0) / (r.portionen || 1);
+  return `<section class="karte summe-karte">
+    <h4 class="unter">Eine Portion (${f0(g)} g)</h4>
+    <div class="vorschau"><div><span class="gross zahl">${f0(n.kcal)}</span><span class="leise">kcal</span></div><div><b class="zahl">${f1(n.eiw)} g</b><span class="leise">Eiweiß</span></div><div><b class="zahl">${f1(n.kh)} g</b><span class="leise">Kohlenh.</span></div><div><b class="zahl">${f1(n.fett)} g</b><span class="leise">Fett</span></div></div>
+    <details class="mehr"><summary>Alle Nährwerte pro Portion</summary>${naehrTabelleKurz(n)}</details>
+    ${pp.fehlt ? `<p class="fuss">Bei einer Zutat fehlen Werte, die Summe ist dann zu niedrig.</p>` : ""}
+  </section>`;
+}
 function rezeptEditor(alt) {
   const r = alt ? JSON.parse(JSON.stringify(alt)) : { id: "eig" + Date.now().toString(36), eigen: true, name: "", portionen: 2, scharf: "mild", mild: "", zutaten: [], steps: [], tipp: "" };
   sheetOeffnen(s => {
@@ -894,8 +968,9 @@ function rezeptEditor(alt) {
           <label>Schärfe<select id="re-scharf">${Object.entries(SCHARF).map(([k, v]) => `<option value="${k}" ${r.scharf === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
         </div>
         <h4 class="unter">Zutaten für alle Portionen</h4>
-        <ul class="zl edit">${r.zutaten.map((z, i) => `<li><span class="m">${f0(z.gramm)} g</span><span>${esc(z.name)}</span><button class="rund klein" data-e="z-weg" data-i="${i}" aria-label="${esc(z.name)} entfernen">×</button></li>`).join("") || `<li class="leise">Noch keine Zutaten.</li>`}</ul>
+        <ul class="zl edit">${r.zutaten.map((z, i) => `<li><span class="m">${f0(z.gramm)} g</span><span>${esc(z.name)}${z.anzeige ? `<span class="h">${esc(z.anzeige)}</span>` : ""}</span><button class="rund klein" data-e="z-weg" data-i="${i}" aria-label="${esc(z.name)} entfernen">×</button></li>`).join("") || `<li class="leise">Noch keine Zutaten. Füg sie aus deinen Produkten, der Lebensmittelsuche oder per Barcode hinzu, in Gramm oder Stück.</li>`}</ul>
         <button class="knopf breit" data-e="z-neu" type="button">Zutat hinzufügen</button>
+        <div id="re-summe">${editorSumme(r)}</div>
         <label>Zubereitung, ein Schritt pro Zeile<textarea id="re-steps" rows="6">${esc((r.steps || []).join("\n"))}</textarea></label>
         <label>So wird es mild (optional)<textarea id="re-mild" rows="2">${esc(r.mild || "")}</textarea></label>
       </div>
@@ -908,11 +983,13 @@ function rezeptEditor(alt) {
       r.steps = $("#re-steps", s).value.split("\n").map(x => x.trim()).filter(Boolean);
     };
     zeichnen();
+    // Portionen ändern: Übersicht sofort neu rechnen
+    s.addEventListener("input", ev => { if (ev.target.id === "re-por") { const p = parseInt(ev.target.value, 10); if (p >= 1 && p <= 20) { r.portionen = p; $("#re-summe", s).innerHTML = editorSumme(r); } } });
     s.addEventListener("click", ev => {
       const b = ev.target.closest("[data-e]"); if (!b) return; const a = b.dataset.e;
       if (a === "zu") sheetSchliessen();
       else if (a === "z-weg") { lesen(); r.zutaten.splice(+b.dataset.i, 1); zeichnen(); }
-      else if (a === "z-neu") { lesen(); suchSheet({ modus: "zutat", onPick: (lm, g) => { r.zutaten.push({ name: lm.name, gramm: Math.round(g), n100: lm.n100, ref: lm.ref }); zeichnen(); } }); }
+      else if (a === "z-neu") { lesen(); suchSheet({ modus: "zutat", onPick: (lm, g, anzeige) => { r.zutaten.push({ name: lm.name, gramm: Math.round(g), anzeige: anzeige || "", n100: lm.n100, ref: lm.ref }); zeichnen(); } }); }
       else if (a === "speichern") {
         lesen();
         if (!r.name) { toast("Bitte einen Namen eingeben"); return; }
@@ -1116,9 +1193,12 @@ function viewProfil() {
         <label>Gewicht (kg)<input id="p-gewicht" inputmode="decimal" value="${esc(String(p.gewicht).replace(".", ","))}"></label>
       </div>
       ${regler("alltag", "Alltag und Beruf, ohne Sport", 0, 3, 1, p.alltag)}
+      ${garmin ? `<p class="mildbox">Dein Sport kommt jeden Tag von der Garmin-Uhr dazu. Deshalb rechnet der Rechner hier ohne Sport, sonst würde er doppelt zählen.</p>` : ""}
+      <div id="sport-box" ${garmin ? "hidden" : ""}>
       ${regler("tage", "Sport pro Woche", 0, 7, 1, p.tage)}
       ${regler("dauer", "Dauer einer Einheit", 15, 150, 15, p.dauer)}
       ${regler("intens", "Wie anstrengend?", 0, 2, 1, p.intens)}
+      </div>
       <label>Ziel<select id="p-ziel">
         <option value="ab" ${p.ziel === "ab" ? "selected" : ""}>Abnehmen und Muskeln halten</option>
         <option value="halten" ${p.ziel === "halten" ? "selected" : ""}>Gewicht halten</option>
@@ -1128,6 +1208,7 @@ function viewProfil() {
     <div id="rechner-erg">${rechnerErgebnis(p)}</div>
     <p class="fuss">Grundumsatz nach Mifflin-St Jeor. Alltag als PAL-Wert nach der Deutschen Gesellschaft für Ernährung. Sport über MET-Werte aus dem Compendium of Physical Activities, Ruheumsatz abgezogen. Abnehmen: rund 7.700 kcal je Kilo Körperfett. Eiweiß 2 g je kg beim Abnehmen, sonst 1,6 bis 1,8 g, bei starkem Übergewicht bezogen auf das Normalgewicht. Fett 25 % der Kalorien, der Rest Kohlenhydrate. Ein Startwert, keine ärztliche Beratung: nach 2 bis 3 Wochen am Gewichtsverlauf nachjustieren.</p>
   </details>
+  ${garminProfilKarte()}
   <details class="karte">
     <summary>Meine Produkte (${prod.length})</summary>
     <ul class="treffer">${prod.map(x => `<li><button data-act="produkt-edit" data-id="${esc(x.id)}"><span class="en"><b>${esc(x.name)}</b><small>${esc(x.marke || "")}${x.code ? " · " + esc(x.code) : ""}${x.quelle === "off" ? " · Open Food Facts" : " · selbst erfasst"}</small></span><span class="zahl leise">${f0(x.n100.kcal)} kcal/100 g</span></button></li>`).join("") || `<li class="leise">Noch keine. Jedes gescannte Produkt landet hier.</li>`}</ul>
@@ -1142,6 +1223,26 @@ function viewProfil() {
     <p class="fuss">Produktdaten: Open Food Facts, freie Datenbank unter der Open Database License (ODbL). Lose Lebensmittel: Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS) 4.0, DOI 10.25826/Data20251217-134202-0. Rezepte: siehe Quelle beim jeweiligen Rezept. App-Version ${VERSION}.</p>
     ${log.length ? `<h4 class="unter">Fehlerprotokoll</h4><pre class="log">${esc(log.map(l => l.t.slice(0, 16).replace("T", " ") + "  " + l.m).join("\n"))}</pre><button class="knopf" data-act="log-weg">Protokoll leeren</button>` : `<p class="fuss">Keine Fehler aufgezeichnet.</p>`}
   </details>`;
+}
+function garminProfilKarte() {
+  const anleitung = `<a href="https://github.com/jranglack-bot/eiweiss-kueche/blob/main/garmin-worker/ANLEITUNG.md" target="_blank" rel="noopener noreferrer">Anleitung Schritt für Schritt</a>`;
+  if (garmin) return `<section class="karte"><h3>Garmin-Uhr</h3>
+    <p class="leise">Verbunden mit ${esc(garmin.url.replace("https://", ""))}. Deine Trainings zählen automatisch zum Tagesziel.</p>
+    <label class="formular">Wie viel der Trainingskalorien anrechnen?<select id="g-anteil">${[50, 75, 100].map(v => `<option value="${v}" ${garmin.anteil === v ? "selected" : ""}>${v} %${v === 75 ? " (empfohlen, Uhren schätzen eher zu hoch)" : ""}</option>`).join("")}</select></label>
+    <div class="knoepfe"><button class="knopf voll" data-act="garmin-test">Verbindung testen</button><button class="knopf warn" data-act="garmin-weg">Trennen</button></div>
+    <div id="garmin-status" aria-live="polite"></div></section>`;
+  return `<details class="karte"><summary>Garmin-Uhr verbinden</summary>
+    <p class="leise">Dann zählen deine Trainings von der Uhr automatisch zum Tagesziel. Einmalig brauchst du dafür einen Garmin-Schlüssel und einen kostenlosen Cloudflare-Worker: ${anleitung}.</p>
+    <form id="garmin-form" class="formular" novalidate>
+      <label>Adresse deines Workers<input id="g-url" placeholder="https://eiweiss-garmin.name.workers.dev" autocomplete="off" inputmode="url"></label>
+      <label>Zugangscode<input id="g-code" type="password" autocomplete="off"></label>
+      <button class="knopf voll" type="submit">Verbinden und testen</button>
+    </form>
+    <div id="garmin-status" aria-live="polite"></div></details>`;
+}
+function garminStatusText(d) {
+  const n = d.aktivitaeten.length;
+  return `Verbunden. Heute ${n === 0 ? "noch kein Training" : n === 1 ? "1 Training" : n + " Trainings"}${d.schritte != null ? `, ${f0(d.schritte)} Schritte` : ""}.`;
 }
 function exportieren() {
   const daten = { app: "eiweiss-kueche", version: VERSION, gesichert: new Date().toISOString(), ziele, profil, tagebuch, produkte, rezepte: eigeneRezepte, liste, zuletzt };
@@ -1175,7 +1276,7 @@ function rechnen(p) {
   const bmr = 10 * kg + 6.25 * cm - 5 * alter + (p.geschlecht === "w" ? -161 : 5);
   const alltag = bmr * REGLER.alltag.werte[p.alltag];
   // Sport: (MET minus Ruhe) mal kg mal Stunden, auf den Tag verteilt
-  const sport = (REGLER.intens.werte[p.intens] - 1) * kg * (p.dauer / 60) * p.tage / 7;
+  const sport = garmin ? 0 : (REGLER.intens.werte[p.intens] - 1) * kg * (p.dauer / 60) * p.tage / 7;
   const bedarf = alltag + sport;
   let kcal = bedarf, aenderung = 0, untergrenze = false;
   if (p.ziel === "ab") {
@@ -1196,7 +1297,7 @@ function rechnerErgebnis(p) {
   return `<table class="naehr">
       ${zeile("Grundumsatz in Ruhe", f0(r.bmr) + " kcal")}
       ${zeile("mit Alltag und Beruf", f0(r.alltag) + " kcal")}
-      ${zeile("plus Sport, im Schnitt pro Tag", "+ " + f0(r.sport) + " kcal")}
+      ${garmin ? zeile("Sport", "kommt täglich von Garmin") : zeile("plus Sport, im Schnitt pro Tag", "+ " + f0(r.sport) + " kcal")}
       ${zeile("Dein Bedarf", f0(r.bedarf) + " kcal", "summe")}
       ${r.aenderung ? zeile(r.aenderung < 0 ? "minus für das Abnehmen" : "plus für den Muskelaufbau", (r.aenderung < 0 ? "− " : "+ ") + f0(Math.abs(r.aenderung)) + " kcal") : ""}
     </table>
@@ -1246,11 +1347,23 @@ document.addEventListener("click", ev => {
   }
   else if (a === "produkt-edit") { const p = produkte[b.dataset.id]; if (p) sheetOeffnen(s => produktForm(s, { produkt: p })); }
   else if (a === "export") exportieren();
+  else if (a === "garmin-neu") { garminAktualisieren(ui.datum, true); toast("Frage Garmin ab …"); }
+  else if (a === "garmin-test") {
+    const st = $("#garmin-status"); st.innerHTML = `<p class="leise lade">Teste die Verbindung …</p>`;
+    garminAbfragen(garmin, heute()).then(d => { garminTage[heute()] = { t: Date.now(), final: false, d }; sichern("garminTage", garminTage); st.innerHTML = `<p class="leise">${esc(garminStatusText(d))}</p>`; },
+      e => { st.innerHTML = `<p class="leise">Klappt nicht: ${esc(e.message)}</p>`; });
+  }
+  else if (a === "garmin-weg") {
+    if (b.dataset.bereit !== "1") { b.dataset.bereit = "1"; b.textContent = "Wirklich trennen?"; setTimeout(() => { if (b.isConnected) { b.dataset.bereit = ""; b.textContent = "Trennen"; } }, 3000); return; }
+    garmin = null; garminTage = {}; try { localStorage.removeItem(LS + "garmin"); localStorage.removeItem(LS + "garminTage"); } catch (e) {}
+    render(); toast("Garmin getrennt");
+  }
   else if (a === "log-weg") { sichern("log", []); render(); }
 });
 document.addEventListener("change", ev => {
   const c = ev.target.dataset && ev.target.dataset.chk;
   if (c) { if (ev.target.checked) liste.chk[c] = 1; else delete liste.chk[c]; sichern("liste", liste); render(); return; }
+  if (ev.target.id === "g-anteil" && garmin) { garmin.anteil = [50, 75, 100].includes(+ev.target.value) ? +ev.target.value : 75; sichern("garmin", garmin); toast(`Es zählen jetzt ${garmin.anteil} % der Trainingskalorien`); return; }
   if (ev.target.id === "import" && ev.target.files[0]) {
     const datei = ev.target.files[0]; const leser = new FileReader();
     leser.onload = () => {
@@ -1287,6 +1400,17 @@ document.addEventListener("submit", ev => {
     const n = {}; for (const k of ["kcal", "eiw", "kh", "fett"]) { const v = zahl($("#z-" + k).value); if (!(v > 0)) { toast("Bitte alle Ziele als Zahl eingeben"); return; } n[k] = Math.round(v); }
     ziele = n; sichern("ziele", ziele); toast("Ziele gespeichert");
   } else if (ev.target.id === "rechner") ev.preventDefault();
+  else if (ev.target.id === "garmin-form") {
+    ev.preventDefault();
+    const cfg = garminSauber({ url: $("#g-url").value, code: $("#g-code").value, anteil: 75 });
+    const st = $("#garmin-status");
+    if (!cfg) { st.innerHTML = `<p class="leise">Die Adresse muss mit https:// beginnen und auf .workers.dev enden, der Zugangscode braucht mindestens 16 Zeichen.</p>`; return; }
+    st.innerHTML = `<p class="leise lade">Teste die Verbindung …</p>`;
+    garminAbfragen(cfg, heute()).then(d => {
+      garmin = cfg; sichern("garmin", garmin); garminTage = { [heute()]: { t: Date.now(), final: false, d } }; sichern("garminTage", garminTage);
+      render(); toast(garminStatusText(d));
+    }, e => { st.innerHTML = `<p class="leise">Klappt noch nicht: ${esc(e.message)}. Prüf Adresse und Zugangscode, und ob im Worker beide Geheimnisse eingetragen sind.</p>`; });
+  }
 });
 // Zielrechner rechnet bei jeder Änderung sofort neu
 function rechnerLesen() {
