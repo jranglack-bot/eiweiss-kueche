@@ -1,7 +1,7 @@
 // Offline-Betrieb. Alle App-Dateien werden beim Installieren gemeinsam geladen und danach aus dem Speicher geliefert.
 // Bei jeder Änderung an einer Datei CACHE hochzählen: dann lädt die App den neuen Satz komplett und zeigt „Neue Version“.
 // Open Food Facts läuft immer übers Netz und landet nie im Speicher.
-const CACHE = "ek-1.4.1";
+const CACHE = "ek-1.5.0";
 const DATEIEN = [
   "./", "./index.html", "./app.js", "./data.js", "./manifest.webmanifest",
   "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png",

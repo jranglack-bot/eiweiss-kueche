@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.4.1";
+const VERSION = "1.5.0";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -309,7 +309,7 @@ function viewTagebuch() {
   return `
   <div class="datum-leiste">
     <button class="rund" data-act="tag" data-d="-1" aria-label="Vorheriger Tag">‹</button>
-    <button class="datum" data-act="heute">${esc(datumText(ui.datum))}</button>
+    <button class="datum" data-act="kalender" aria-label="Kalender öffnen, ${esc(datumText(ui.datum))}">${esc(datumText(ui.datum))}<svg class="kal-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></button>
     <button class="rund" data-act="tag" data-d="1" aria-label="Nächster Tag">›</button>
   </div>
   <section class="karte bilanz">
@@ -324,6 +324,48 @@ function viewTagebuch() {
   </section>
   ${garmin ? garminTagKarte(g, sport) : ""}
   ${zeilen}`;
+}
+// Monatskalender: Tag antippen springt ins Tagebuch. Punkt grün = im Ziel, orange = mehr als 5 % drüber.
+function tagesStatus(iso) {
+  const l = tagebuch[iso]; if (!l || !l.length) return null;
+  const kcal = l.reduce((a, e) => a + (e.n.kcal || 0), 0); const eiw = l.reduce((a, e) => a + (e.n.eiw || 0), 0);
+  const ziel = ziele.kcal + sportKcal(garmin ? garminTage[iso] : null);
+  return { kcal, eiw, ziel, drueber: kcal > ziel * 1.05 };
+}
+function kalenderSheet() {
+  let [y, m] = ui.datum.split("-").map(Number);
+  const WT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  sheetOeffnen(s => {
+    const zeichnen = () => {
+      const tage = new Date(y, m, 0).getDate(); const versatz = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+      const titel = new Date(y, m - 1, 1).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+      const h = heute(); let zellen = "", erfasst = 0, sumK = 0, sumE = 0, imZiel = 0;
+      for (let i = 0; i < versatz; i++) zellen += `<span class="kal-leer"></span>`;
+      for (let d = 1; d <= tage; d++) {
+        const iso = `${y}-${pad(m)}-${pad(d)}`; const st = tagesStatus(iso);
+        if (st) { erfasst++; sumK += st.kcal; sumE += st.eiw; if (!st.drueber) imZiel++; }
+        const klasse = ["kal-tag", iso === h ? "heute" : "", iso === ui.datum ? "gewaehlt" : "", st ? (st.drueber ? "drueber" : "imziel") : ""].filter(Boolean).join(" ");
+        const label = new Date(y, m - 1, d).toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long" }) + (st ? `, ${f0(st.kcal)} von ${f0(st.ziel)} kcal` : ", nichts eingetragen");
+        zellen += `<button class="${klasse}" data-k="tag" data-d="${iso}" aria-label="${esc(label)}"${iso === ui.datum ? ' aria-current="date"' : ""}>${d}${st ? `<i></i>` : ""}</button>`;
+      }
+      s.innerHTML = `
+        <div class="sh-kopf"><button class="rund" data-k="zu" aria-label="Schließen">×</button><span class="leise">Tag wählen</span>${ui.datum !== h ? `<button class="knopf" data-k="heute">Heute</button>` : ""}</div>
+        <div class="kal-kopf"><button class="rund" data-k="monat" data-v="-1" aria-label="Voriger Monat">‹</button><h2>${esc(titel)}</h2><button class="rund" data-k="monat" data-v="1" aria-label="Nächster Monat">›</button></div>
+        <div class="kal-raster">${WT.map(w => `<span class="kal-wt">${w}</span>`).join("")}${zellen}</div>
+        <p class="kal-legende"><span><i class="imziel"></i>im Ziel</span><span><i class="drueber"></i>drüber</span></p>
+        ${erfasst ? `<section class="karte"><h3>${esc(titel)} im Schnitt</h3>
+          <div class="kal-schnitt"><div><b class="zahl">${f0(sumK / erfasst)}</b><span class="leise">kcal am Tag</span></div><div><b class="zahl">${f0(sumE / erfasst)} g</b><span class="leise">Eiweiß am Tag</span></div><div><b class="zahl">${erfasst}</b><span class="leise">Tage erfasst</span></div><div><b class="zahl">${imZiel}</b><span class="leise">davon im Ziel</span></div></div></section>`
+          : `<p class="leise">In diesem Monat ist noch nichts eingetragen.</p>`}`;
+    };
+    zeichnen();
+    s.onclick = ev => {
+      const b = ev.target.closest("[data-k]"); if (!b) return; const a = b.dataset.k;
+      if (a === "zu") sheetSchliessen();
+      else if (a === "monat") { m += +b.dataset.v; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } zeichnen(); }
+      else if (a === "tag") { ui.datum = b.dataset.d; sheetSchliessen(); }
+      else if (a === "heute") { ui.datum = heute(); sheetSchliessen(); }
+    };
+  });
 }
 function garminTagKarte(g, sport) {
   let inhalt;
@@ -1318,6 +1360,7 @@ document.addEventListener("click", ev => {
   const a = b.dataset.act;
   if (a === "tag") { ui.datum = datumPlus(ui.datum, +b.dataset.d); render(); }
   else if (a === "heute") { ui.datum = heute(); render(); }
+  else if (a === "kalender") kalenderSheet();
   else if (a === "details") { ui.details = !ui.details; render(); }
   else if (a === "hinzu") suchSheet({ meal: b.dataset.meal });
   else if (a === "eintrag") {
