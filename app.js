@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -1218,6 +1218,11 @@ function viewProfil() {
     <p class="leise">Alles liegt nur auf diesem Handy. Sichere ab und zu eine Datei, zum Beispiel in Google Drive.</p>
     <div class="knoepfe"><button class="knopf voll" data-act="export">Sicherung herunterladen</button><label class="knopf">Sicherung einspielen<input id="import" type="file" accept="application/json,.json" hidden></label></div>
   </section>
+  <section class="karte">
+    <h3>App-Version ${esc(VERSION)}</h3>
+    <p class="leise">Die App sucht beim Öffnen selbst nach Updates. Hier kannst du sofort nachsehen.</p>
+    <button class="knopf voll" data-act="update-suchen">Nach Updates suchen</button>
+  </section>
   <details class="karte">
     <summary>Quellen und Version</summary>
     <p class="fuss">Produktdaten: Open Food Facts, freie Datenbank unter der Open Database License (ODbL). Lose Lebensmittel: Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS) 4.0, DOI 10.25826/Data20251217-134202-0. Rezepte: siehe Quelle beim jeweiligen Rezept. App-Version ${VERSION}.</p>
@@ -1234,7 +1239,7 @@ function garminProfilKarte() {
   return `<details class="karte"><summary>Garmin-Uhr verbinden</summary>
     <p class="leise">Dann zählen deine Trainings von der Uhr automatisch zum Tagesziel. Einmalig brauchst du dafür einen Garmin-Schlüssel und einen kostenlosen Cloudflare-Worker: ${anleitung}.</p>
     <form id="garmin-form" class="formular" novalidate>
-      <label>Adresse deines Workers<input id="g-url" placeholder="https://eiweiss-garmin.name.workers.dev" autocomplete="off" inputmode="url"></label>
+      <label>Adresse deines Workers<input id="g-url" value="https://eiweiss-garmin.j-ranglack.workers.dev" autocomplete="off" inputmode="url"></label>
       <label>Zugangscode<input id="g-code" type="password" autocomplete="off"></label>
       <button class="knopf voll" type="submit">Verbinden und testen</button>
     </form>
@@ -1437,12 +1442,28 @@ $("#scan-fab").addEventListener("click", () => {
 render();
 basisLaden().then(render);
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+// Updates: Der Service Worker lädt eine neue Fassung komplett und übernimmt sofort. Die App fragt beim Start,
+// bei jeder Rückkehr in die App (höchstens alle 30 Minuten) und auf Knopfdruck nach.
+let swReg = null, letzteSuche = 0, neuLadenNachUpdate = false;
+async function nachUpdatesSuchen(manuell) {
+  if (!swReg) { if (manuell) toast("Updates gehen nur in der installierten App"); return; }
+  letzteSuche = Date.now();
+  try {
+    await swReg.update();
+    const neu = swReg.installing || swReg.waiting;
+    if (neu) { if (manuell) { neuLadenNachUpdate = true; toast("Update gefunden, wird geladen …"); } }
+    else if (manuell) toast(`Du hast die neueste Version (${VERSION})`);
+  } catch (e) { if (manuell) toast("Keine Verbindung, versuch es später noch einmal"); }
+}
 if ("serviceWorker" in navigator && location.protocol === "https:") {
-  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).catch(e => fehlerMerken("SW: " + e.message));
+  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then(r => { swReg = r; }).catch(e => fehlerMerken("SW: " + e.message));
   let hatteController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hatteController) { hatteController = true; return; }
-    const n = $("#update"); n.hidden = false;
+    if (neuLadenNachUpdate && !sheets.length) { location.reload(); return; }
+    $("#update").hidden = false;
   });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && Date.now() - letzteSuche > 30 * 60e3) nachUpdatesSuchen(false); });
 }
 $("#update-knopf").addEventListener("click", () => location.reload());
+document.addEventListener("click", ev => { if (ev.target.closest("[data-act=update-suchen]")) nachUpdatesSuchen(true); });

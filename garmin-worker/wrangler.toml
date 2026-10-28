@@ -1,0 +1,7 @@
+# Cloudflare Worker für die Garmin-Brücke. Bereitstellen: im Ordner garmin-worker `npx wrangler deploy`.
+# Geheimnisse nie hier eintragen, sondern mit `npx wrangler secret put GARMIN_SCHLUESSEL` und `npx wrangler secret put ZUGANG`.
+name = "eiweiss-garmin"
+main = "worker.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+preview_urls = false
