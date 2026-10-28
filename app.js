@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -161,8 +161,10 @@ function datenSauber(d) {
   if (l.anders && typeof l.anders === "object") for (const k of Object.keys(l.anders).slice(0, 300)) if (k.length <= 120 && typeof l.anders[k] === "string") liste.anders[k] = str(l.anders[k], 40);
   const zuletzt = Array.isArray(d.zuletzt) ? d.zuletzt.slice(0, 20).filter(x => x && typeof x === "object").map(lmSauber) : [];
   const p = d.profil && typeof d.profil === "object" ? d.profil : {};
+  const ganz = (v, min, max, def) => { const x = parseInt(v, 10); return Number.isFinite(x) && x >= min && x <= max ? x : def; };
   const profil = { geschlecht: p.geschlecht === "w" ? "w" : "m", alter: str(p.alter, 4), groesse: str(p.groesse, 5), gewicht: str(p.gewicht, 6),
-    aktiv: ["1.2", "1.375", "1.55", "1.725"].includes(p.aktiv) ? p.aktiv : "1.375", ziel: ["ab", "halten", "auf"].includes(p.ziel) ? p.ziel : "ab" };
+    alltag: ganz(p.alltag, 0, 3, 1), tage: ganz(p.tage, 0, 7, 3), dauer: ganz(p.dauer, 15, 150, 60), intens: ganz(p.intens, 0, 2, 1), tempo: ganz(p.tempo, 0, 2, 1),
+    ziel: ["ab", "halten", "auf"].includes(p.ziel) ? p.ziel : "ab" };
   return { ziele, profil, tagebuch, produkte, rezepte, liste, zuletzt };
 }
 const SPEICHER_TEILE = ["ziele", "profil", "tagebuch", "produkte", "rezepte", "liste", "zuletzt"];
@@ -615,10 +617,15 @@ function produktForm(s, opts) {
     <div class="sh-kopf">${opts.zurueck ? `<button class="rund" data-p="zurueck" aria-label="Zurück">‹</button>` : `<button class="rund" data-p="zu" aria-label="Schließen">×</button>`}<span class="leise">${opts.produkt && !opts.neu ? "Produkt ändern" : "Neues Produkt"}</span></div>
     ${opts.hinweis ? `<p class="mildbox">${esc(opts.hinweis)}</p>` : ""}
     <form id="pform" class="formular" novalidate>
-      <label>Name<input id="pf-name" required value="${esc(p.name)}" autocomplete="off"></label>
+      <label>Was ist das?<input id="pf-name" required value="${esc(p.name)}" placeholder="zum Beispiel Schinkenwurst, Brokkoli oder Chips" autocomplete="off"></label>
       <label>Marke<input id="pf-marke" value="${esc(p.marke || "")}" autocomplete="off"></label>
       <label>Barcode<input id="pf-code" inputmode="numeric" value="${esc(p.code || "")}" autocomplete="off"></label>
       <h4 class="unter">Nährwerte pro 100 g</h4>
+      <div class="foto">
+        <label class="knopf voll breit">Foto der Nährwerttabelle<input id="pf-foto" type="file" accept="image/*" capture="environment" hidden></label>
+        <p class="fuss">Tabelle gerade und bildfüllend fotografieren, ohne Spiegelung. Beim ersten Mal lädt die Texterkennung einmalig etwa 5 MB, danach geht es auch ohne Internet.</p>
+        <div id="pf-ocr" aria-live="polite"></div>
+      </div>
       <div class="raster">${PF.map(([k, lab, pflicht]) => `<label>${lab}${pflicht ? " *" : ""}<input id="pf-${k}" inputmode="decimal" value="${wert(p.n100[k])}"></label>`).join("")}</div>
       <div class="raster">
         <label>Portion in g<input id="pf-portion" inputmode="decimal" value="${wert(p.portion_g)}"></label>
@@ -627,6 +634,7 @@ function produktForm(s, opts) {
       <p class="leise">* Pflichtfelder. Komma oder Punkt, beides geht.</p>
       <div class="sh-fuss"><button class="knopf voll" type="submit">Speichern</button>${opts.produkt && produkte[p.id] && !opts.neu ? `<button class="knopf warn" type="button" data-p="loesch">Produkt löschen</button>` : ""}</div>
     </form>`;
+  $("#pf-foto", s).addEventListener("change", ev => { const f = ev.target.files && ev.target.files[0]; ev.target.value = ""; if (f) etikettAuslesen(s, f); });
   let loeschBereit = false;
   s.onclick = ev => {
     const b = ev.target.closest("[data-p]"); if (!b) return;
@@ -651,6 +659,168 @@ function produktForm(s, opts) {
     produkte[id] = neu; sichern("produkte", produkte); toast("Produkt gespeichert");
     if (opts.weiter) opts.weiter(neu); else sheetSchliessen();
   });
+}
+
+// ---------- Foto der Nährwerttabelle (Texterkennung auf dem Handy) ----------
+// Tesseract 5.1.1 liegt in vendor/ocr und wird erst beim ersten Foto geladen. Nach 90 Sekunden ohne Foto wird es beendet,
+// damit das Handy den Speicher zurückbekommt.
+const OCR_PFAD = "./vendor/ocr/";
+let ocrArbeiter = null, ocrLaden = null, ocrTimer = null, ocrMelden = null;
+function ocrHolen() {
+  if (ocrArbeiter) return Promise.resolve(ocrArbeiter);
+  if (!ocrLaden) ocrLaden = (async () => {
+    const T = (await import(OCR_PFAD + "tesseract.esm.min.js")).default;
+    const basis = new URL(OCR_PFAD, location.href).href;
+    const w = await T.createWorker("deu", 1, { workerPath: basis + "worker.min.js", corePath: basis, langPath: basis, workerBlobURL: false, gzip: true, logger: m => ocrMelden && ocrMelden(m) });
+    await w.setParameters({ preserve_interword_spaces: "1" });
+    ocrArbeiter = w; return w;
+  })().finally(() => { ocrLaden = null; });
+  return ocrLaden;
+}
+function ocrSpaeterBeenden() {
+  clearTimeout(ocrTimer);
+  ocrTimer = setTimeout(async () => { const w = ocrArbeiter; ocrArbeiter = null; if (w) { try { await w.terminate(); } catch (e) {} } }, 90000);
+}
+async function bildVorbereiten(datei) {
+  // verkleinern, Graustufen, Kontrast strecken: das liest Tesseract deutlich besser
+  // kleine Bilder werden vergrößert (Tesseract liest Ziffern ab etwa 30 px Höhe sicher), große verkleinert
+  const bmp = await createImageBitmap(datei, { imageOrientation: "from-image" });
+  const lang = Math.max(bmp.width, bmp.height); const f = lang > 2000 ? 2000 / lang : lang < 1600 ? Math.min(3, 2000 / lang) : 1;
+  const c = document.createElement("canvas"); c.width = Math.round(bmp.width * f); c.height = Math.round(bmp.height * f);
+  const g = c.getContext("2d", { willReadFrequently: true }); g.imageSmoothingQuality = "high"; g.drawImage(bmp, 0, 0, c.width, c.height); if (bmp.close) bmp.close();
+  const d = g.getImageData(0, 0, c.width, c.height); const p = d.data; const n = c.width * c.height;
+  const grau = new Uint8Array(n); const hist = new Uint32Array(256);
+  for (let i = 0, j = 0; j < n; i += 4, j++) { const v = (p[i] * 0.299 + p[i + 1] * 0.587 + p[i + 2] * 0.114) | 0; grau[j] = v; hist[v]++; }
+  let lo = 0, hi = 255, acc = 0;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > n * 0.02) { lo = v; break; } }
+  acc = 0; for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > n * 0.02) { hi = v; break; } }
+  const span = Math.max(1, hi - lo);
+  for (let i = 0, j = 0; j < n; i += 4, j++) { const v = Math.max(0, Math.min(255, ((grau[j] - lo) * 255 / span) | 0)); p[i] = p[i + 1] = p[i + 2] = v; }
+  g.putImageData(d, 0, 0);
+  return c;
+}
+// Sucht in den erkannten Zeilen die Werte pro 100 g. Bei zwei Spalten (100 g und Portion) zählt die erste Zahl hinter der Bezeichnung.
+function naehrwerteAusText(text) {
+  const zahl1 = s => { const t = s.trim().split(/\s+/); for (let i = 0; i < t.length; i++) { const v = wertAusWort({ t: t[i], nach: t[i + 1] || "" }); if (v != null) return v; } return null; };
+  let kcalErst = null;
+  const regeln = [["einf", /einfach|mono/i], ["mehrf", /mehrfach|poly/i], ["skip", /unges/i], ["ges", /ges[äa]tt|gesatt|saturat/i], ["zucker", /zucker|sugar/i], ["ball", /ballast|fibre|fiber/i],
+    ["eiw", /eiwei|eiweis|protein/i], ["salz", /salz|\bsalt\b/i], ["kh", /kohlen\s*-?\s*hydrat|carbohydrat/i], ["fett", /\bfett|\bfat\b/i]];
+  const o = {}; let kj = null;
+  for (let z of text.replace(/\r/g, "").split("\n")) {
+    z = z.trim(); if (!z) continue;
+    z = z.replace(/\b[oO](?=[,.]\d)/g, "0").replace(/(\d)[oO]\b/g, "$10").replace(/(\d)\s+([,.])\s*(\d)/g, "$1$2$3");
+    const kc = z.match(/(\d+(?:[.,]\d+)?)\s*k\s*c\s*a\s*[l1iI|]/i);
+    if (kc && kcalErst == null) kcalErst = Number(kc[1].replace(",", "."));
+    const kjm = z.match(/(\d+(?:[.,]\d+)?)\s*k\s*[jJ)]/); if (kjm && kj == null) kj = Number(kjm[1].replace(",", "."));
+    if (kc || kjm) continue;
+    if (/brennwert|energie/i.test(z) && kcalErst == null) {
+      // Schreibweise „Brennwert kJ/kcal 1046/250“: erst kJ, dann kcal
+      const nums = [...z.matchAll(/(\d+(?:[.,]\d+)?)/g)].map(m => Number(m[1].replace(",", ".")));
+      if (nums.length >= 2 && nums[0] > nums[1] * 3) { kj = nums[0]; kcalErst = nums[1]; }
+      else if (nums.length === 1 && /kcal/i.test(z)) kcalErst = nums[0];
+      continue;
+    }
+    for (const [k, re] of regeln) {
+      const m = re.exec(z); if (!m) continue;
+      if (k === "skip") break;
+      if (k === "fett" && /s[äa]ure/i.test(z)) break;
+      if (o[k] == null) { const v = zahl1(z.slice(m.index + m[0].length)); if (v != null) o[k] = v; }
+      break;
+    }
+  }
+  // kJ steht immer in der ersten Spalte (pro 100 g). Passt die erste kcal-Zahl nicht dazu, stammt sie meist aus der Portionsspalte.
+  if (kj != null) { const ausKj = kj / 4.184; o.kcal = kcalErst != null && Math.abs(kcalErst - ausKj) <= ausKj * 0.06 ? kcalErst : Math.round(ausKj); }
+  else if (kcalErst != null) o.kcal = kcalErst;
+  // unplausible Zahlen verwerfen
+  for (const k of Object.keys(o)) if (!(o[k] >= 0) || o[k] > (k === "kcal" ? 950 : 100)) delete o[k];
+  return o;
+}
+// Zweiter Weg über die Lage der Wörter im Bild: Die Reihenfolge der Zeilen in der Nährwerttabelle ist gesetzlich
+// festgelegt (LMIV Anhang XV). Auf gewölbten Bechern stehen Bezeichnung und Zahl oft nicht auf einer Zeile,
+// deshalb werden die Zahlen der ersten Spalte von oben nach unten der Reihe nach den Zeilen zugeordnet.
+const LMIV_REIHE = ["fett", "ges", "einf", "mehrf", "kh", "zucker", "ball", "eiw", "salz"];
+const LMIV_PFLICHT = ["fett", "ges", "kh", "zucker", "eiw", "salz"];
+const LABEL = { fett: /^(fett|fat)[,.:]?$/i, ges: /ges[äa]tt|saturat/i, einf: /einfach|mono/i, mehrf: /mehrfach|poly/i, kh: /kohlen|carbohydrat/i, zucker: /zucker|sugar/i, ball: /ballast|fibre|fiber/i, eiw: /eiwe|eiwei|protein|^ei.{1,3}[ßsB]$/i, salz: /^(salz|salt)/i };
+function woerterAus(data) {
+  const l = [];
+  for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const li of p.lines || []) {
+    const ws = li.words || [];
+    ws.forEach((w, i) => l.push({ t: w.text || "", x: (w.bbox.x0 + w.bbox.x1) / 2, y: (w.bbox.y0 + w.bbox.y1) / 2, h: Math.max(1, w.bbox.y1 - w.bbox.y0), nach: ws[i + 1] ? ws[i + 1].text : "" }));
+  }
+  return l;
+}
+function wertAusWort(w) {
+  if (/%|\//.test(w.t)) return null;
+  const t = w.t.replace(/^[<≤(]+/, "").replace(/[)]+$/, "").replace(/[oO](?=[,.-]?\d)/g, "0").replace(/(\d[,.-]?)[oO]/g, "$10").replace(/(\d)-(\d)/, "$1,$2");
+  const m = t.match(/^(\d{1,3})(?:[,.](\d{1,3}))?(g|9)?$/i); if (!m) return null;
+  let dez = m[2] || "";
+  // „5,2g“ liest Tesseract oft als „5,29“: zweite Nachkommastelle 9 ohne eigenes g dahinter ist meist das g
+  if (!m[3] && dez.length >= 2 && dez.endsWith("9") && !/^g$/i.test(w.nach)) dez = dez.slice(0, -1);
+  let ganz = m[1];
+  // „19 g“ wird zu „199g“: über 100 g pro 100 g geht nicht, dann war die letzte 9 das Leerzeichen mit g
+  if (!dez && ganz.length >= 2 && Number(ganz) >= 100 && ganz.endsWith("9")) ganz = ganz.slice(0, -1);
+  const v = Number(ganz + (dez ? "." + dez : ""));
+  return isFinite(v) && v < 100 ? v : null;
+}
+function naehrwerteAusLage(data, breite) {
+  const w = woerterAus(data); if (!w.length) return {};
+  const energie = w.filter(x => /kcal|k[jJ)]/.test(x.t));
+  const yE = energie.length ? Math.max(...energie.map(x => x.y)) : -Infinity;
+  const hE = energie.length ? Math.max(...energie.map(x => x.h)) : 0;
+  const labels = [];
+  for (const x of w) for (const k of LMIV_REIHE) if (LABEL[k].test(x.t) && !(k === "ges" && /unges/i.test(x.t))) { labels.push({ k, y: x.y, x: x.x }); break; }
+  const labelX = labels.length ? Math.max(...labels.map(l => l.x)) : 0;
+  const zahlen = w.filter(x => x.y > yE + hE * 0.6 && x.x > labelX).map(x => ({ ...x, v: wertAusWort(x) })).filter(x => x.v != null).sort((a, b) => a.x - b.x);
+  if (!zahlen.length) return {};
+  // Spalten bilden, die linke ist „pro 100 g“
+  const spalten = []; for (const z of zahlen) { const s = spalten[spalten.length - 1]; if (s && z.x - s[s.length - 1].x < breite * 0.07) s.push(z); else spalten.push([z]); }
+  const spalte = (spalten.find(s => s.length >= 2) || spalten[0]).sort((a, b) => a.y - b.y);
+  const gefunden = new Set(labels.map(l => l.k));
+  const reihe = LMIV_REIHE.filter(k => LMIV_PFLICHT.includes(k) || gefunden.has(k));
+  const o = {};
+  if (spalte.length === reihe.length) reihe.forEach((k, i) => { o[k] = spalte[i].v; });
+  else {
+    // Zahl und Bezeichnung passen nicht auf: nächstgelegene Zahl je Bezeichnung nehmen
+    const frei = new Set(spalte);
+    for (const l of labels.sort((a, b) => a.y - b.y)) {
+      let best = null; for (const z of frei) if (!best || Math.abs(z.y - l.y) < Math.abs(best.y - l.y)) best = z;
+      // eng halten: lieber ein Feld leer lassen als einen Wert aus der Nachbarzeile eintragen
+      if (best && Math.abs(best.y - l.y) < best.h * 0.7 && o[l.k] == null) { o[l.k] = best.v; frei.delete(best); }
+    }
+  }
+  return o;
+}
+async function etikettAuslesen(s, datei) {
+  const box = $("#pf-ocr", s); if (!box) return;
+  const url = URL.createObjectURL(datei);
+  box.innerHTML = `<img class="ocr-bild" src="${url}" alt="Dein Foto der Nährwerttabelle"><p class="lade" id="ocr-status">Bereite das Foto vor …</p>`;
+  const status = t => { const e = $("#ocr-status", s); if (e) e.textContent = t; };
+  ocrMelden = m => {
+    const pz = m.progress ? ` ${Math.round(m.progress * 100)} %` : "";
+    status(m.status === "recognizing text" ? "Lese die Tabelle …" + pz : "Texterkennung wird geladen …" + pz);
+  };
+  try {
+    const bild = await bildVorbereiten(datei);
+    const w = await ocrHolen();
+    status("Lese die Tabelle …");
+    const { data } = await w.recognize(bild, {}, { text: true, blocks: true });
+    const ausText = naehrwerteAusText(data.text || ""); const ausLage = naehrwerteAusLage(data, bild.width);
+    const werte = Object.assign({}, ausText, ausLage); if (ausText.kcal != null) werte.kcal = ausText.kcal;
+    const keys = Object.keys(werte);
+    for (const [k] of PF) { const inp = $("#pf-" + k, s); if (!inp) continue; inp.classList.remove("auto"); if (werte[k] != null) { inp.value = String(werte[k]).replace(".", ","); inp.classList.add("auto"); } }
+    let warn = "";
+    if (werte.kcal != null && werte.eiw != null && werte.kh != null && werte.fett != null) {
+      const rechn = werte.eiw * 4 + werte.kh * 4 + werte.fett * 9;
+      if (rechn > 0 && Math.abs(rechn - werte.kcal) / werte.kcal > 0.2) warn = " Die Kalorien passen nicht ganz zu Eiweiß, Fett und Kohlenhydraten, schau bitte genau hin.";
+    }
+    status(keys.length ? `${keys.length} ${keys.length === 1 ? "Wert" : "Werte"} erkannt und grün markiert. Bitte mit dem Foto vergleichen und fehlende Felder ergänzen.${warn}` : "Auf dem Foto habe ich keine Werte gefunden. Versuch es näher und gerader, oder trag die Werte von Hand ein.");
+    fehlerMerken("Info, Foto ausgelesen: " + (keys.join(",") || "nichts erkannt"));
+  } catch (e) {
+    fehlerMerken("Texterkennung: " + (e && e.message || e));
+    status("Das Foto ließ sich nicht auslesen. Trag die Werte bitte von Hand ein.");
+  } finally {
+    ocrMelden = null; ocrSpaeterBeenden();
+  }
 }
 
 // ---------- Barcode-Scanner ----------
@@ -924,7 +1094,7 @@ function produktAufListe(lm) {
 function viewProfil() {
   const prod = Object.values(produkte).sort((a, b) => a.name.localeCompare(b.name, "de"));
   const log = laden("log", []);
-  const p = Object.assign({ geschlecht: "m", alter: "", groesse: "", gewicht: "", aktiv: "1.375", ziel: "ab" }, profil);
+  const p = profil;
   return `<h2 class="seitentitel">Profil und Ziele</h2>
   <section class="karte">
     <h3>Tagesziele</h3>
@@ -938,24 +1108,25 @@ function viewProfil() {
   </section>
   <details class="karte">
     <summary>Ziele ausrechnen lassen</summary>
-    <form id="rechner" class="formular raster" novalidate>
-      <label>Geschlecht<select id="p-geschlecht"><option value="m" ${p.geschlecht === "m" ? "selected" : ""}>Mann</option><option value="w" ${p.geschlecht === "w" ? "selected" : ""}>Frau</option></select></label>
-      <label>Alter<input id="p-alter" inputmode="numeric" value="${esc(p.alter)}"></label>
-      <label>Größe (cm)<input id="p-groesse" inputmode="numeric" value="${esc(p.groesse)}"></label>
-      <label>Gewicht (kg)<input id="p-gewicht" inputmode="decimal" value="${esc(String(p.gewicht).replace(".", ","))}"></label>
-      <label>Alltag<select id="p-aktiv">
-        <option value="1.2" ${p.aktiv === "1.2" ? "selected" : ""}>viel Sitzen, kaum Sport</option>
-        <option value="1.375" ${p.aktiv === "1.375" ? "selected" : ""}>1 bis 3 Mal Sport pro Woche</option>
-        <option value="1.55" ${p.aktiv === "1.55" ? "selected" : ""}>3 bis 5 Mal Sport pro Woche</option>
-        <option value="1.725" ${p.aktiv === "1.725" ? "selected" : ""}>fast täglich Sport</option></select></label>
+    <form id="rechner" class="formular" novalidate>
+      <div class="raster">
+        <label>Geschlecht<select id="p-geschlecht"><option value="m" ${p.geschlecht === "m" ? "selected" : ""}>Mann</option><option value="w" ${p.geschlecht === "w" ? "selected" : ""}>Frau</option></select></label>
+        <label>Alter<input id="p-alter" inputmode="numeric" value="${esc(p.alter)}"></label>
+        <label>Größe (cm)<input id="p-groesse" inputmode="numeric" value="${esc(p.groesse)}"></label>
+        <label>Gewicht (kg)<input id="p-gewicht" inputmode="decimal" value="${esc(String(p.gewicht).replace(".", ","))}"></label>
+      </div>
+      ${regler("alltag", "Alltag und Beruf, ohne Sport", 0, 3, 1, p.alltag)}
+      ${regler("tage", "Sport pro Woche", 0, 7, 1, p.tage)}
+      ${regler("dauer", "Dauer einer Einheit", 15, 150, 15, p.dauer)}
+      ${regler("intens", "Wie anstrengend?", 0, 2, 1, p.intens)}
       <label>Ziel<select id="p-ziel">
         <option value="ab" ${p.ziel === "ab" ? "selected" : ""}>Abnehmen und Muskeln halten</option>
         <option value="halten" ${p.ziel === "halten" ? "selected" : ""}>Gewicht halten</option>
         <option value="auf" ${p.ziel === "auf" ? "selected" : ""}>Muskeln aufbauen</option></select></label>
-      <button class="knopf voll" type="submit">Ausrechnen</button>
+      <div id="tempo-box" ${p.ziel === "ab" ? "" : "hidden"}>${regler("tempo", "Wie schnell abnehmen?", 0, 2, 1, p.tempo)}</div>
     </form>
-    <div id="rechner-erg"></div>
-    <p class="fuss">Grundumsatz nach Mifflin-St Jeor mal Alltagsfaktor. Abnehmen: 500 kcal weniger. Eiweiß 2 g pro kg Körpergewicht, Fett 25 % der Kalorien, der Rest Kohlenhydrate. Das ist ein Startwert, keine ärztliche Beratung.</p>
+    <div id="rechner-erg">${rechnerErgebnis(p)}</div>
+    <p class="fuss">Grundumsatz nach Mifflin-St Jeor. Alltag als PAL-Wert nach der Deutschen Gesellschaft für Ernährung. Sport über MET-Werte aus dem Compendium of Physical Activities, Ruheumsatz abgezogen. Abnehmen: rund 7.700 kcal je Kilo Körperfett. Eiweiß 2 g je kg beim Abnehmen, sonst 1,6 bis 1,8 g, bei starkem Übergewicht bezogen auf das Normalgewicht. Fett 25 % der Kalorien, der Rest Kohlenhydrate. Ein Startwert, keine ärztliche Beratung: nach 2 bis 3 Wochen am Gewichtsverlauf nachjustieren.</p>
   </details>
   <details class="karte">
     <summary>Meine Produkte (${prod.length})</summary>
@@ -978,16 +1149,60 @@ function exportieren() {
   const l = document.createElement("a"); l.href = url; l.download = `eiweiss-kueche-${heute()}.json`; document.body.appendChild(l); l.click(); l.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000); toast("Sicherung erstellt");
 }
+// Schieberegler mit Beispielen, damit klar ist, was jede Stufe bedeutet
+const REGLER = {
+  // jeweils der untere Wert der DGE-Spanne, damit der Bedarf beim Abnehmen nicht zu hoch geschätzt wird
+  alltag: { werte: [1.4, 1.6, 1.8, 2.0], text: [
+    "Fast nur Sitzen: Büro, Auto, abends Sofa",
+    "Sitzen mit Bewegung: Büro, aber Wege zu Fuß, Kinder, Haushalt",
+    "Viel auf den Beinen: Verkauf, Pflege, Gastronomie, leichtes Handwerk",
+    "Körperlich schwer: Bau, Lager, Landwirtschaft"] },
+  tage: { text: v => v === 0 ? "Gar kein Sport" : v === 1 ? "1 Mal pro Woche, zum Beispiel samstags Fußball" : v <= 3 ? `${v} Mal pro Woche, zum Beispiel ${v} Mal Fitnessstudio` : v <= 5 ? `${v} Mal pro Woche, regelmäßiges Training` : `${v} Mal pro Woche, fast jeden Tag` },
+  dauer: { text: v => `${v} Minuten pro Einheit` },
+  intens: { werte: [3.5, 5.5, 8.5], text: [
+    "Leicht: zügig spazieren, Yoga, gemütlich Rad fahren",
+    "Mittel: Krafttraining, locker joggen, Schwimmen",
+    "Hart: schnell laufen, Spinning, Fußball, HIIT oder Crossfit"] },
+  tempo: { werte: [0.25, 0.5, 0.75], text: ["Langsam: etwa 0,25 kg pro Woche, leicht durchzuhalten", "Mittel: etwa 0,5 kg pro Woche", "Schnell: etwa 0,75 kg pro Woche, nur mit viel Eiweiß und Krafttraining"] }
+};
+function reglerText(id, v) { const r = REGLER[id]; return typeof r.text === "function" ? r.text(v) : r.text[v]; }
+function regler(id, titel, min, max, schritt, wert) {
+  return `<label class="regler"><span class="r-kopf">${titel}</span><input type="range" id="p-${id}" min="${min}" max="${max}" step="${schritt}" value="${esc(wert)}"><span class="r-wert" id="p-${id}-txt">${esc(reglerText(id, wert))}</span></label>`;
+}
 function rechnen(p) {
   const kg = zahl(p.gewicht), cm = zahl(p.groesse), alter = zahl(p.alter);
-  if (!(kg > 30 && cm > 120 && alter > 12)) return null;
+  if (!(kg > 30 && kg < 350 && cm > 120 && cm < 250 && alter > 12 && alter < 110)) return null;
   const bmr = 10 * kg + 6.25 * cm - 5 * alter + (p.geschlecht === "w" ? -161 : 5);
-  let kcal = bmr * Number(p.aktiv);
-  if (p.ziel === "ab") kcal = Math.max(kcal - 500, p.geschlecht === "w" ? 1200 : 1500);
-  if (p.ziel === "auf") kcal += 250;
+  const alltag = bmr * REGLER.alltag.werte[p.alltag];
+  // Sport: (MET minus Ruhe) mal kg mal Stunden, auf den Tag verteilt
+  const sport = (REGLER.intens.werte[p.intens] - 1) * kg * (p.dauer / 60) * p.tage / 7;
+  const bedarf = alltag + sport;
+  let kcal = bedarf, aenderung = 0, untergrenze = false;
+  if (p.ziel === "ab") {
+    aenderung = -REGLER.tempo.werte[p.tempo] * 7700 / 7; kcal = bedarf + aenderung;
+    const min = Math.max(bmr, p.geschlecht === "w" ? 1200 : 1500); if (kcal < min) { kcal = min; untergrenze = true; }
+  } else if (p.ziel === "auf") { aenderung = 250; kcal = bedarf + 250; }
   kcal = Math.round(kcal / 10) * 10;
-  const eiw = Math.round(2 * kg); const fett = Math.round(kcal * 0.25 / 9); const kh = Math.max(0, Math.round((kcal - eiw * 4 - fett * 9) / 4));
-  return { kcal, eiw, fett, kh, bmr: Math.round(bmr) };
+  const bmi = kg / ((cm / 100) ** 2); const refKg = bmi > 30 ? 25 * (cm / 100) ** 2 : kg;
+  const eiw = Math.round((p.ziel === "ab" ? 2.0 : p.ziel === "auf" ? 1.8 : 1.6) * refKg);
+  const fett = Math.max(Math.round(kcal * 0.25 / 9), Math.round(0.7 * refKg));
+  const kh = Math.max(0, Math.round((kcal - eiw * 4 - fett * 9) / 4));
+  return { kcal, eiw, fett, kh, bmr: Math.round(bmr), alltag: Math.round(alltag), sport: Math.round(sport), bedarf: Math.round(bedarf), aenderung: Math.round(aenderung), untergrenze };
+}
+function rechnerErgebnis(p) {
+  const r = rechnen(p);
+  if (!r) return `<p class="leise">Trag Alter, Größe und Gewicht ein, dann rechnet die App sofort.</p>`;
+  const zeile = (a, b, k = "") => `<tr class="${k}"><th>${a}</th><td class="zahl">${b}</td></tr>`;
+  return `<table class="naehr">
+      ${zeile("Grundumsatz in Ruhe", f0(r.bmr) + " kcal")}
+      ${zeile("mit Alltag und Beruf", f0(r.alltag) + " kcal")}
+      ${zeile("plus Sport, im Schnitt pro Tag", "+ " + f0(r.sport) + " kcal")}
+      ${zeile("Dein Bedarf", f0(r.bedarf) + " kcal", "summe")}
+      ${r.aenderung ? zeile(r.aenderung < 0 ? "minus für das Abnehmen" : "plus für den Muskelaufbau", (r.aenderung < 0 ? "− " : "+ ") + f0(Math.abs(r.aenderung)) + " kcal") : ""}
+    </table>
+    ${r.untergrenze ? `<p class="mildbox">Weniger wäre zu wenig. Die App bleibt bei ${f0(r.kcal)} kcal, deinem Grundumsatz oder der Untergrenze.</p>` : ""}
+    <div class="vorschau"><div><span class="gross zahl">${f0(r.kcal)}</span><span class="leise">kcal am Tag</span></div><div><b class="zahl">${r.eiw} g</b><span class="leise">Eiweiß</span></div><div><b class="zahl">${r.kh} g</b><span class="leise">Kohlenh.</span></div><div><b class="zahl">${r.fett} g</b><span class="leise">Fett</span></div></div>
+    <button class="knopf voll breit" data-act="uebernehmen" data-w='${JSON.stringify({ kcal: r.kcal, eiw: r.eiw, kh: r.kh, fett: r.fett })}'>Als Tagesziele übernehmen</button>`;
 }
 
 // ---------- Ereignisse ----------
@@ -1071,16 +1286,20 @@ document.addEventListener("submit", ev => {
     ev.preventDefault();
     const n = {}; for (const k of ["kcal", "eiw", "kh", "fett"]) { const v = zahl($("#z-" + k).value); if (!(v > 0)) { toast("Bitte alle Ziele als Zahl eingeben"); return; } n[k] = Math.round(v); }
     ziele = n; sichern("ziele", ziele); toast("Ziele gespeichert");
-  } else if (ev.target.id === "rechner") {
-    ev.preventDefault();
-    profil = { geschlecht: $("#p-geschlecht").value, alter: $("#p-alter").value, groesse: $("#p-groesse").value, gewicht: $("#p-gewicht").value, aktiv: $("#p-aktiv").value, ziel: $("#p-ziel").value };
-    sichern("profil", profil);
-    const r = rechnen(profil); const ziel = $("#rechner-erg");
-    if (!r) { ziel.innerHTML = `<p class="leise">Bitte Alter, Größe und Gewicht eintragen.</p>`; return; }
-    ziel.innerHTML = `<div class="vorschau"><div><span class="gross zahl">${f0(r.kcal)}</span><span class="leise">kcal</span></div><div><b class="zahl">${r.eiw} g</b><span class="leise">Eiweiß</span></div><div><b class="zahl">${r.kh} g</b><span class="leise">Kohlenh.</span></div><div><b class="zahl">${r.fett} g</b><span class="leise">Fett</span></div></div>
-      <p class="fuss">Grundumsatz ${f0(r.bmr)} kcal.</p><button class="knopf voll" data-act="uebernehmen" data-w='${JSON.stringify({ kcal: r.kcal, eiw: r.eiw, kh: r.kh, fett: r.fett })}'>Als Tagesziele übernehmen</button>`;
-  }
+  } else if (ev.target.id === "rechner") ev.preventDefault();
 });
+// Zielrechner rechnet bei jeder Änderung sofort neu
+function rechnerLesen() {
+  const v = id => $("#p-" + id); if (!v("alter")) return;
+  profil = datenSauber({ tagebuch: {}, profil: { geschlecht: v("geschlecht").value, alter: v("alter").value, groesse: v("groesse").value, gewicht: v("gewicht").value,
+    alltag: v("alltag").value, tage: v("tage").value, dauer: v("dauer").value, intens: v("intens").value, tempo: v("tempo").value, ziel: v("ziel").value } }).profil;
+  sichern("profil", profil);
+  for (const id of ["alltag", "tage", "dauer", "intens", "tempo"]) { const t = $("#p-" + id + "-txt"); if (t) t.textContent = reglerText(id, profil[id]); }
+  $("#tempo-box").hidden = profil.ziel !== "ab";
+  $("#rechner-erg").innerHTML = rechnerErgebnis(profil);
+}
+document.addEventListener("input", ev => { if (ev.target.closest && ev.target.closest("#rechner")) rechnerLesen(); });
+document.addEventListener("change", ev => { if (ev.target.closest && ev.target.closest("#rechner")) rechnerLesen(); });
 document.addEventListener("click", ev => {
   const b = ev.target.closest("[data-act=uebernehmen]"); if (!b) return;
   try { ziele = JSON.parse(b.dataset.w); sichern("ziele", ziele); toast("Ziele übernommen"); render(); } catch (e) {}

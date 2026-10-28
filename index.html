@@ -173,6 +173,16 @@ table.naehr{width:100%;border-collapse:collapse;font-size:14px}
 .formular label{display:grid;gap:4px;font-size:14px;color:var(--muted)}
 .formular input,.formular select,.formular textarea,#suche{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:11px 12px;font-size:16px;color:var(--ink)}
 .raster{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:end}
+.formular input.auto{border-color:var(--accent);background:var(--accent-soft)}
+.regler{display:grid;gap:6px;padding:10px 0;border-top:1px solid var(--line)}
+.regler .r-kopf{color:var(--ink);font-weight:700;font-size:15px}
+.regler input[type=range]{width:100%;accent-color:var(--accent);height:32px;padding:0;border:0;background:transparent}
+.regler .r-wert{color:var(--muted);font-size:14px;min-height:2.6em}
+.naehr tr.summe th,.naehr tr.summe td{font-weight:700;border-bottom:2px solid var(--ink)}
+.foto{display:contents}
+.foto .fuss{margin:-6px 0 0}
+.ocr-bild{display:block;width:100%;max-height:170px;object-fit:contain;background:var(--surface);border:1px solid var(--line);border-radius:12px;position:sticky;top:0;z-index:2}
+#pf-ocr{display:contents}
 .raster>.knopf{grid-column:1/-1}
 .kopie,.log{width:100%;min-height:220px;font-family:var(--f-mono);font-size:13px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px;white-space:pre-wrap;overflow:auto;margin:0}
 .log{min-height:0;max-height:240px}
