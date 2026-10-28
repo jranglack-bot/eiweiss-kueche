@@ -1,6 +1,6 @@
 import { GAENGE, BASIS, EINHEIT_G, REZEPTE, GRUNDREGELN } from "./data.js";
 
-const VERSION = "1.6.0";
+const VERSION = "1.6.1";
 const OFF_FELDER = "code,product_name,product_name_de,brands,quantity,product_quantity,serving_quantity,nutriments";
 // Barcode-Erkennung für Geräte ohne eingebauten Scanner (iPhone, Firefox), liegt in der App selbst
 const BARCODE_POLYFILL = "./vendor/barcode-detector-2.3.1.min.js";
@@ -164,7 +164,7 @@ function datenSauber(d) {
   const ganz = (v, min, max, def) => { const x = parseInt(v, 10); return Number.isFinite(x) && x >= min && x <= max ? x : def; };
   const profil = { geschlecht: p.geschlecht === "w" ? "w" : "m", alter: str(p.alter, 4), groesse: str(p.groesse, 5), gewicht: str(p.gewicht, 6),
     alltag: ganz(p.alltag, 0, 3, 1), tage: ganz(p.tage, 0, 7, 3), dauer: ganz(p.dauer, 15, 150, 60), intens: ganz(p.intens, 0, 2, 1), tempo: ganz(p.tempo, 0, 2, 1),
-    ziel: ["ab", "halten", "auf"].includes(p.ziel) ? p.ziel : "ab" };
+    ziel: ["ab", "rekomp", "halten", "auf"].includes(p.ziel) ? p.ziel : "ab" };
   // Essensplan: je Tag geplante Rezepte mit Mahlzeit, Uhrzeit und Portionen
   const plan = {};
   if (d.plan && typeof d.plan === "object") for (const [tag, l] of Object.entries(d.plan)) if (/^\d{4}-\d{2}-\d{2}$/.test(tag) && Array.isArray(l)) {
@@ -1410,12 +1410,14 @@ function viewProfil() {
       </div>
       <label>Ziel<select id="p-ziel">
         <option value="ab" ${p.ziel === "ab" ? "selected" : ""}>Abnehmen und Muskeln halten</option>
+        <option value="rekomp" ${p.ziel === "rekomp" ? "selected" : ""}>Abnehmen und Muskeln aufbauen</option>
         <option value="halten" ${p.ziel === "halten" ? "selected" : ""}>Gewicht halten</option>
         <option value="auf" ${p.ziel === "auf" ? "selected" : ""}>Muskeln aufbauen</option></select></label>
       <div id="tempo-box" ${p.ziel === "ab" ? "" : "hidden"}>${regler("tempo", "Wie schnell abnehmen?", 0, 2, 1, p.tempo)}</div>
+      <p class="mildbox" id="rekomp-box" ${p.ziel === "rekomp" ? "" : "hidden"}>Langsam abnehmen, damit die Muskeln trotzdem wachsen: etwa 300 kcal unter deinem Bedarf und viel Eiweiß. Funktioniert nur mit Krafttraining, 2 bis 4 Mal pro Woche.</p>
     </form>
     <div id="rechner-erg">${rechnerErgebnis(p)}</div>
-    <p class="fuss">Grundumsatz nach Mifflin-St Jeor. Alltag als PAL-Wert nach der Deutschen Gesellschaft für Ernährung. Sport über MET-Werte aus dem Compendium of Physical Activities, Ruheumsatz abgezogen. Abnehmen: rund 7.700 kcal je Kilo Körperfett. Eiweiß 2 g je kg beim Abnehmen, sonst 1,6 bis 1,8 g, bei starkem Übergewicht bezogen auf das Normalgewicht. Fett 25 % der Kalorien, der Rest Kohlenhydrate. Ein Startwert, keine ärztliche Beratung: nach 2 bis 3 Wochen am Gewichtsverlauf nachjustieren.</p>
+    <p class="fuss">Grundumsatz nach Mifflin-St Jeor. Alltag als PAL-Wert nach der Deutschen Gesellschaft für Ernährung. Sport über MET-Werte aus dem Compendium of Physical Activities, Ruheumsatz abgezogen. Abnehmen: rund 7.700 kcal je Kilo Körperfett. Eiweiß 2 g je kg beim Abnehmen, 2,2 g beim Abnehmen mit Muskelaufbau, sonst 1,6 bis 1,8 g, bei starkem Übergewicht bezogen auf das Normalgewicht. Fett 25 % der Kalorien, der Rest Kohlenhydrate. Ein Startwert, keine ärztliche Beratung: nach 2 bis 3 Wochen am Gewichtsverlauf nachjustieren.</p>
   </details>
   ${garminProfilKarte()}
   <details class="karte">
@@ -1496,10 +1498,13 @@ function rechnen(p) {
   if (p.ziel === "ab") {
     aenderung = -REGLER.tempo.werte[p.tempo] * 7700 / 7; kcal = bedarf + aenderung;
     const min = Math.max(bmr, p.geschlecht === "w" ? 1200 : 1500); if (kcal < min) { kcal = min; untergrenze = true; }
+  } else if (p.ziel === "rekomp") {
+    aenderung = -300; kcal = bedarf - 300;
+    const min = Math.max(bmr, p.geschlecht === "w" ? 1200 : 1500); if (kcal < min) { kcal = min; untergrenze = true; }
   } else if (p.ziel === "auf") { aenderung = 250; kcal = bedarf + 250; }
   kcal = Math.round(kcal / 10) * 10;
   const bmi = kg / ((cm / 100) ** 2); const refKg = bmi > 30 ? 25 * (cm / 100) ** 2 : kg;
-  const eiw = Math.round((p.ziel === "ab" ? 2.0 : p.ziel === "auf" ? 1.8 : 1.6) * refKg);
+  const eiw = Math.round(({ ab: 2.0, rekomp: 2.2, auf: 1.8, halten: 1.6 }[p.ziel] || 1.8) * refKg);
   const fett = Math.max(Math.round(kcal * 0.25 / 9), Math.round(0.7 * refKg));
   const kh = Math.max(0, Math.round((kcal - eiw * 4 - fett * 9) / 4));
   return { kcal, eiw, fett, kh, bmr: Math.round(bmr), alltag: Math.round(alltag), sport: Math.round(sport), bedarf: Math.round(bedarf), aenderung: Math.round(aenderung), untergrenze };
@@ -1507,11 +1512,11 @@ function rechnen(p) {
 function rechnerErgebnis(p) {
   const r = rechnen(p);
   if (!r) return `<p class="leise">Trag Alter, Größe und Gewicht ein, dann rechnet die App sofort.</p>`;
-  const zeile = (a, b, k = "") => `<tr class="${k}"><th>${a}</th><td class="zahl">${b}</td></tr>`;
+  const zeile = (a, b, k = "", text = false) => `<tr class="${k}"><th>${a}</th><td class="${text ? "" : "zahl"}">${b}</td></tr>`;
   return `<table class="naehr">
       ${zeile("Grundumsatz in Ruhe", f0(r.bmr) + " kcal")}
       ${zeile("mit Alltag und Beruf", f0(r.alltag) + " kcal")}
-      ${garmin ? zeile("Sport", "kommt täglich von Garmin") : zeile("plus Sport, im Schnitt pro Tag", "+ " + f0(r.sport) + " kcal")}
+      ${garmin ? zeile("Sport", "kommt täglich von Garmin", "", true) : zeile("plus Sport, im Schnitt pro Tag", "+ " + f0(r.sport) + " kcal")}
       ${zeile("Dein Bedarf", f0(r.bedarf) + " kcal", "summe")}
       ${r.aenderung ? zeile(r.aenderung < 0 ? "minus für das Abnehmen" : "plus für den Muskelaufbau", (r.aenderung < 0 ? "− " : "+ ") + f0(Math.abs(r.aenderung)) + " kcal") : ""}
     </table>
@@ -1651,9 +1656,16 @@ function rechnerLesen() {
   sichern("profil", profil);
   for (const id of ["alltag", "tage", "dauer", "intens", "tempo"]) { const t = $("#p-" + id + "-txt"); if (t) t.textContent = reglerText(id, profil[id]); }
   $("#tempo-box").hidden = profil.ziel !== "ab";
+  $("#rekomp-box").hidden = profil.ziel !== "rekomp";
   $("#rechner-erg").innerHTML = rechnerErgebnis(profil);
 }
 document.addEventListener("input", ev => { if (ev.target.closest && ev.target.closest("#rechner")) rechnerLesen(); });
+// Schieberegler berührt: Eingabefeld verlassen, damit die Handy-Tastatur zugeht und nicht wieder aufspringt
+document.addEventListener("pointerdown", ev => {
+  if (!ev.target.matches || !ev.target.matches('input[type="range"]')) return;
+  const a = document.activeElement;
+  if (a && a !== ev.target && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) a.blur();
+}, true);
 document.addEventListener("change", ev => { if (ev.target.closest && ev.target.closest("#rechner")) rechnerLesen(); });
 document.addEventListener("click", ev => {
   const b = ev.target.closest("[data-act=uebernehmen]"); if (!b) return;
